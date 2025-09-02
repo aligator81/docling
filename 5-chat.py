@@ -12,6 +12,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 # Load environment variables
 load_dotenv()
 
+<<<<<<< HEAD
 # Add diagnostic logging for debugging
 print(f"DEBUG: Current working directory: {os.getcwd()}")
 print(f"DEBUG: .env file exists: {os.path.exists('.env')}")
@@ -33,6 +34,10 @@ if not api_key:
 
 client = OpenAI(api_key=api_key)
 print(f"DEBUG: OpenAI client created successfully")
+=======
+# Initialize OpenAI client
+client = OpenAI()
+>>>>>>> 99fe1f9d064d750dec8c5a0cf8de004641d1b0dc
 
 
 def update_extraction_source(source):
@@ -205,7 +210,11 @@ def get_chat_response(messages, context: str) -> str:
     """
     system_prompt = f"""You are a helpful assistant that answers questions based on the provided context.
     Use only the information from the context to answer questions. If you're unsure or the context
+<<<<<<< HEAD
     doesn't contain the relevant information, say so. 
+=======
+    doesn't contain the relevant information, say so. answer only what is asked from the docum and do not provide additional information.    
+>>>>>>> 99fe1f9d064d750dec8c5a0cf8de004641d1b0dc
     Context:
     {context}
     """
@@ -302,23 +311,38 @@ with st.sidebar:
     
     # Upload section
     st.markdown('<div class="upload-section">', unsafe_allow_html=True)
+<<<<<<< HEAD
     st.subheader("📁 Upload Document or Image")
     uploaded_file = st.file_uploader(
         "Drag & drop or click to upload",
         type=["pdf", "png", "jpg", "jpeg", "tiff", "bmp", "docx", "xlsx"],
         help="Upload PDF, DOCX, XLSX, PNG, JPEG, TIFF, or BMP files for processing",
+=======
+    st.subheader("📁 Upload PDF")
+    uploaded_file = st.file_uploader(
+        "Drag & drop or click to upload",
+        type=["pdf"],
+        help="Upload a PDF document for processing",
+>>>>>>> 99fe1f9d064d750dec8c5a0cf8de004641d1b0dc
         label_visibility="collapsed"
     )
     
     st.subheader("🔗 Or enter URL")
     url = st.text_input(
+<<<<<<< HEAD
         "Document/Image URL",
         placeholder="https://example.com/document.pdf or https://example.com/image.png",
         help="Enter URL to PDF, DOCX, XLSX, PNG, JPEG, TIFF, or BMP file",
+=======
+        "Document URL",
+        placeholder="https://example.com/document.pdf",
+        help="Enter URL to PDF or webpage",
+>>>>>>> 99fe1f9d064d750dec8c5a0cf8de004641d1b0dc
         label_visibility="collapsed"
     )
     st.markdown('</div>', unsafe_allow_html=True)
     
+<<<<<<< HEAD
     # Image processing information
     with st.expander("ℹ️ About Image Processing"):
         st.markdown("""
@@ -345,6 +369,8 @@ with st.sidebar:
         - 📊 Excel Spreadsheets → Data and text extraction
         """)
     
+=======
+>>>>>>> 99fe1f9d064d750dec8c5a0cf8de004641d1b0dc
     # Processing buttons
     col1, col2 = st.columns(2)
     
@@ -403,7 +429,11 @@ with st.sidebar:
                         st.error("Failed to update extraction script")
                         status.update(label="❌ Update Failed", state="error")
         else:
+<<<<<<< HEAD
             st.warning("📝 Please upload a document/image file or enter a URL first")
+=======
+            st.warning("📝 Please upload a PDF file or enter a URL first")
+>>>>>>> 99fe1f9d064d750dec8c5a0cf8de004641d1b0dc
     
     # Process chunking
     if chunk_btn:
@@ -438,7 +468,11 @@ with st.sidebar:
                 status.update(label="❌ Embedding Failed", state="error")
 
 # Main content area for chat
+<<<<<<< HEAD
 st.markdown('<div class="main-header">📚 Document & Image Q&A Assistant</div>', unsafe_allow_html=True)
+=======
+st.markdown('<div class="main-header">📚 Document Q&A Assistant</div>', unsafe_allow_html=True)
+>>>>>>> 99fe1f9d064d750dec8c5a0cf8de004641d1b0dc
 
 # Initialize session state for chat history
 if "messages" not in st.session_state:
@@ -452,7 +486,11 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 # Chat input
+<<<<<<< HEAD
 if prompt := st.chat_input("💬 Ask a question about the document or image..."):
+=======
+if prompt := st.chat_input("💬 Ask a question about the document..."):
+>>>>>>> 99fe1f9d064d750dec8c5a0cf8de004641d1b0dc
     # Display user message
     with st.chat_message("user"):
         st.markdown(prompt)
