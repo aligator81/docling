@@ -1,0 +1,9 @@
+requests
+python-dotenv
+openai
+pydantic
+docling
+lancedb
+streamlit
+tiktoken
+scikit-learn
