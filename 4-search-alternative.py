@@ -18,19 +18,19 @@ mistral_client = None
 if embedding_provider == "openai":
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        print("❌ OPENAI_API_KEY environment variable is not set. Please configure it in your .env file.")
+        print("OPENAI_API_KEY environment variable is not set. Please configure it in your .env file.")
         exit(1)
     openai_client = OpenAI(api_key=api_key)
-    print("🤖 Using OpenAI for embeddings")
+    print("Using OpenAI for embeddings")
 elif embedding_provider == "mistral":
     api_key = os.getenv("MISTRAL_API_KEY")
     if not api_key:
-        print("❌ MISTRAL_API_KEY environment variable is not set. Please configure it in your .env file.")
+        print("MISTRAL_API_KEY environment variable is not set. Please configure it in your .env file.")
         exit(1)
     mistral_client = Mistral(api_key=api_key)
-    print("🤖 Using Mistral for embeddings")
+    print("Using Mistral for embeddings")
 else:
-    print("❌ Invalid EMBEDDING_PROVIDER. Use 'openai' or 'mistral'")
+    print("Invalid EMBEDDING_PROVIDER. Use 'openai' or 'mistral'")
     exit(1)
 
 def get_embedding(text):
