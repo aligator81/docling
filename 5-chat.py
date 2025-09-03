@@ -1,3 +1,4 @@
+
 import streamlit as st
 import json
 import numpy as np
@@ -6,38 +7,159 @@ import os
 import re
 import sys
 from openai import OpenAI
+from mistralai import Mistral
 from dotenv import load_dotenv
 from sklearn.metrics.pairwise import cosine_similarity
 
 # Load environment variables
 load_dotenv()
 
-<<<<<<< HEAD
-# Add diagnostic logging for debugging
-print(f"DEBUG: Current working directory: {os.getcwd()}")
-print(f"DEBUG: .env file exists: {os.path.exists('.env')}")
-if os.path.exists('.env'):
-    with open('.env', 'r') as f:
-        env_content = f.read()
-    print(f"DEBUG: .env file content length: {len(env_content)}")
-    print(f"DEBUG: .env contains OPENAI_API_KEY: {'OPENAI_API_KEY' in env_content}")
+# Initialize session state for API keys and settings
+if "api_keys_configured" not in st.session_state:
+    st.session_state.api_keys_configured = False
+if "openai_client" not in st.session_state:
+    st.session_state.openai_client = None
+if "mistral_client" not in st.session_state:
+    st.session_state.mistral_client = None
+if "llm_provider" not in st.session_state:
+    st.session_state.llm_provider = "openai"
+if "embedding_provider" not in st.session_state:
+    st.session_state.embedding_provider = "openai"
 
-# Initialize OpenAI client with explicit API key handling
-api_key = os.getenv("OPENAI_API_KEY")
-print(f"DEBUG: API key loaded: {api_key is not None}")
-print(f"DEBUG: API key length: {len(api_key) if api_key else 0}")
-print(f"DEBUG: API key starts with sk-: {api_key.startswith('sk-') if api_key else False}")
+def configure_api_keys():
+    """Display API key configuration interface"""
+    st.markdown("### 🔑 API Configuration")
+    st.markdown("Please configure your API keys to get started:")
+    
+    # LLM Provider selection
+    provider_choice = st.selectbox(
+        "Choose your LLM Provider:",
+        options=["openai", "mistral"],
+        index=0 if st.session_state.llm_provider == "openai" else 1,
+        help="Select which LLM provider you want to use for chat responses"
+    )
+    
+    # API Key inputs
+    col1, col2 = st.columns(2)
+    
+    # Embedding provider selection
+    st.markdown("#### Embedding Provider")
+    embedding_provider = st.selectbox(
+        "Choose Embedding Provider:",
+        options=["openai", "mistral"],
+        index=0,
+        help="Select which provider to use for text embeddings"
+    )
+    
+    with col1:
+        st.markdown("#### OpenAI Configuration")
+        openai_key = st.text_input(
+            "OpenAI API Key:",
+            type="password",
+            value=os.getenv("OPENAI_API_KEY", ""),
+            help=f"Required for chat (if using OpenAI) and embeddings (if using OpenAI for embeddings)",
+            placeholder="sk-...",
+            disabled=(provider_choice == "mistral" and embedding_provider == "mistral")
+        )
+        openai_model = st.selectbox(
+            "OpenAI Chat Model:",
+            options=["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"],
+            index=0,
+            help="Choose your preferred OpenAI model",
+            disabled=(provider_choice == "mistral")
+        )
+    
+    with col2:
+        st.markdown("#### Mistral Configuration")
+        mistral_key = st.text_input(
+            "Mistral API Key:",
+            type="password",
+            value=os.getenv("MISTRAL_API_KEY", ""),
+            help="Required for chat (if using Mistral) and embeddings (if using Mistral for embeddings)",
+            placeholder="your-mistral-key",
+            disabled=(provider_choice == "openai" and embedding_provider == "openai")
+        )
+        mistral_model = st.selectbox(
+            "Mistral Chat Model:",
+            options=["mistral-small-latest", "mistral-medium-latest", "mistral-large-latest"],
+            index=0,
+            help="Choose your preferred Mistral model (small recommended for rate limits)",
+            disabled=(provider_choice == "openai")
+        )
+    
+    # Configuration notes
+    if provider_choice == "mistral":
+        st.info("ℹ️ **Note**: Mistral provides both chat and embedding models. You can use Mistral for everything, or optionally keep OpenAI for embeddings.")
+    
+    # Test and save configuration
+    if st.button("🔧 Test & Save Configuration", type="primary"):
+        try:
+            success = True
+            error_messages = []
+            
+            # Validate OpenAI configuration if needed
+            if provider_choice == "openai" or embedding_provider == "openai":
+                if not openai_key:
+                    error_messages.append("OpenAI API key is required for selected configuration")
+                    success = False
+                else:
+                    try:
+                        test_openai_client = OpenAI(api_key=openai_key)
+                        # Test with a minimal request
+                        test_openai_client.models.list()
+                        st.session_state.openai_client = test_openai_client
+                        st.session_state.openai_model = openai_model
+                    except Exception as e:
+                        error_messages.append(f"OpenAI API key validation failed: {str(e)}")
+                        success = False
+            
+            # Validate Mistral configuration if needed
+            if provider_choice == "mistral" or embedding_provider == "mistral":
+                if not mistral_key:
+                    error_messages.append("Mistral API key is required for selected configuration")
+                    success = False
+                else:
+                    try:
+                        test_mistral_client = Mistral(api_key=mistral_key)
+                        # Test with a minimal request
+                        test_mistral_client.models.list()
+                        st.session_state.mistral_client = test_mistral_client
+                        st.session_state.mistral_model = mistral_model
+                    except Exception as e:
+                        error_messages.append(f"Mistral API key validation failed: {str(e)}")
+                        success = False
+            
+            if success:
+                st.session_state.llm_provider = provider_choice
+                st.session_state.embedding_provider = embedding_provider
+                st.session_state.api_keys_configured = True
+                st.success("✅ Configuration successful! You can now use the application.")
+                st.rerun()
+            else:
+                for msg in error_messages:
+                    st.error(f"❌ {msg}")
+                    
+        except Exception as e:
+            st.error(f"❌ Configuration failed: {str(e)}")
 
-if not api_key:
-    st.error("❌ OPENAI_API_KEY environment variable is not set. Please configure it in your .env file or environment variables.")
+if not st.session_state.api_keys_configured:
+    st.set_page_config(
+        page_title="🔑 API Configuration",
+        page_icon="🔑",
+        layout="wide"
+    )
+    
+    st.title("🔑 LLM API Configuration")
+    st.markdown("Welcome! Please configure your API keys to get started with the Document Q&A Assistant.")
+    
+    configure_api_keys()
     st.stop()
 
-client = OpenAI(api_key=api_key)
-print(f"DEBUG: OpenAI client created successfully")
-=======
-# Initialize OpenAI client
-client = OpenAI()
->>>>>>> 99fe1f9d064d750dec8c5a0cf8de004641d1b0dc
+# Get the configured clients and settings
+openai_client = st.session_state.openai_client
+mistral_client = st.session_state.mistral_client
+llm_provider = st.session_state.llm_provider
+embedding_provider = st.session_state.get("embedding_provider", "openai")
 
 
 def update_extraction_source(source):
@@ -133,12 +255,23 @@ def run_embedding():
 
 
 def get_embedding(text):
-    """Get embedding for text using OpenAI API"""
-    response = client.embeddings.create(
-        model="text-embedding-3-large",
-        input=text
-    )
-    return response.data[0].embedding
+    """Get embedding for text using the configured embedding provider"""
+    embedding_provider = st.session_state.get("embedding_provider", "openai")
+    
+    if embedding_provider == "openai":
+        response = openai_client.embeddings.create(
+            model="text-embedding-3-large",
+            input=text
+        )
+        return response.data[0].embedding
+    elif embedding_provider == "mistral":
+        response = mistral_client.embeddings.create(
+            model="mistral-embed",
+            inputs=[text]
+        )
+        return response.data[0].embedding
+    else:
+        raise ValueError(f"Unsupported embedding provider: {embedding_provider}")
 
 
 def get_context(query: str, num_results: int = 5) -> str:
@@ -199,7 +332,7 @@ def get_context(query: str, num_results: int = 5) -> str:
 
 
 def get_chat_response(messages, context: str) -> str:
-    """Get streaming response from OpenAI API.
+    """Get streaming response from the selected LLM API.
 
     Args:
         messages: Chat history
@@ -210,28 +343,44 @@ def get_chat_response(messages, context: str) -> str:
     """
     system_prompt = f"""You are a helpful assistant that answers questions based on the provided context.
     Use only the information from the context to answer questions. If you're unsure or the context
-<<<<<<< HEAD
-    doesn't contain the relevant information, say so. 
-=======
-    doesn't contain the relevant information, say so. answer only what is asked from the docum and do not provide additional information.    
->>>>>>> 99fe1f9d064d750dec8c5a0cf8de004641d1b0dc
+    doesn't contain the relevant information, say so.
     Context:
     {context}
     """
 
     messages_with_context = [{"role": "system", "content": system_prompt}, *messages]
 
-    # Create the streaming response
-    stream = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=messages_with_context,
-        temperature=0.7,
-        stream=True,
-    )
-
-    # Use Streamlit's built-in streaming capability
-    response = st.write_stream(stream)
-    return response
+    if llm_provider == "openai":
+        # Create the streaming response with OpenAI
+        stream = openai_client.chat.completions.create(
+            model=st.session_state.get("openai_model", "gpt-4o-mini"),
+            messages=messages_with_context,
+            temperature=0.7,
+            stream=True,
+        )
+        response = st.write_stream(stream)
+        return response
+    
+    elif llm_provider == "mistral":
+        # Create the streaming response with Mistral
+        stream = mistral_client.chat.stream(
+            model=st.session_state.get("mistral_model", "mistral-large-latest"),
+            messages=messages_with_context,
+            temperature=0.7,
+        )
+        
+        # Create a generator that extracts content from Mistral's streaming format
+        def mistral_stream_generator():
+            for chunk in stream:
+                if hasattr(chunk, 'data') and hasattr(chunk.data, 'choices'):
+                    if chunk.data.choices and chunk.data.choices[0].delta.content:
+                        yield chunk.data.choices[0].delta.content
+                elif hasattr(chunk, 'choices'):
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        yield chunk.choices[0].delta.content
+        
+        response = st.write_stream(mistral_stream_generator())
+        return response
 
 
 # Initialize Streamlit app with custom styling
@@ -309,68 +458,51 @@ st.markdown("""
 with st.sidebar:
     st.markdown('<div class="sidebar-header">📄 Document Processing</div>', unsafe_allow_html=True)
     
+    # Display current LLM and embedding providers
+    if llm_provider == "openai":
+        openai_model = st.session_state.get("openai_model", "gpt-4o-mini")
+        st.info(f"💬 Chat: OpenAI ({openai_model})")
+    elif llm_provider == "mistral":
+        mistral_model = st.session_state.get("mistral_model", "mistral-large-latest")
+        st.info(f"💬 Chat: Mistral ({mistral_model})")
+    
+    # Display embedding provider
+    if embedding_provider == "openai":
+        st.info(f"🧬 Embeddings: OpenAI (text-embedding-3-large)")
+    elif embedding_provider == "mistral":
+        st.info(f"🧬 Embeddings: Mistral (mistral-embed)")
+    
+    # Add settings button to reconfigure
+    if st.button("⚙️ Change LLM Provider", use_container_width=True):
+        # Clear all configuration
+        st.session_state.api_keys_configured = False
+        st.session_state.openai_client = None
+        st.session_state.mistral_client = None
+        st.session_state.embedding_provider = "openai"
+        st.session_state.messages = []  # Clear chat history
+        st.rerun()
+    
+    st.markdown("---")
+    
     # Upload section
     st.markdown('<div class="upload-section">', unsafe_allow_html=True)
-<<<<<<< HEAD
-    st.subheader("📁 Upload Document or Image")
+    st.subheader("📁 Upload Document")
     uploaded_file = st.file_uploader(
         "Drag & drop or click to upload",
-        type=["pdf", "png", "jpg", "jpeg", "tiff", "bmp", "docx", "xlsx"],
-        help="Upload PDF, DOCX, XLSX, PNG, JPEG, TIFF, or BMP files for processing",
-=======
-    st.subheader("📁 Upload PDF")
-    uploaded_file = st.file_uploader(
-        "Drag & drop or click to upload",
-        type=["pdf"],
-        help="Upload a PDF document for processing",
->>>>>>> 99fe1f9d064d750dec8c5a0cf8de004641d1b0dc
+        type=["pdf", "docx", "xlsx", "pptx", "md", "html", "htm", "xhtml", "png", "jpg", "jpeg", "tiff", "bmp"],
+        help="Upload a document for processing (PDF, DOCX, XLSX, PPTX, Markdown, HTML, Images)",
         label_visibility="collapsed"
     )
     
     st.subheader("🔗 Or enter URL")
     url = st.text_input(
-<<<<<<< HEAD
-        "Document/Image URL",
-        placeholder="https://example.com/document.pdf or https://example.com/image.png",
-        help="Enter URL to PDF, DOCX, XLSX, PNG, JPEG, TIFF, or BMP file",
-=======
         "Document URL",
         placeholder="https://example.com/document.pdf",
-        help="Enter URL to PDF or webpage",
->>>>>>> 99fe1f9d064d750dec8c5a0cf8de004641d1b0dc
+        help="Enter URL to document or webpage (PDF, DOCX, HTML, etc.)",
         label_visibility="collapsed"
     )
     st.markdown('</div>', unsafe_allow_html=True)
     
-<<<<<<< HEAD
-    # Image processing information
-    with st.expander("ℹ️ About Image Processing"):
-        st.markdown("""
-        **Supported Image Formats:**
-        - 📄 **Scanned Documents** - OCR converts to searchable text
-        - 📱 **Screenshots** - Extract text content from images
-        - 📊 **Charts & Graphs** - Text extraction from labels and annotations
-        - 🧪 **Technical Diagrams** - Extract any text elements
-        - ✍️ **Handwritten Notes** - OCR can process clear handwriting
-        
-        **Supported Formats:**
-        - 📄 **Documents:** PDF, DOCX (Word), XLSX (Excel)
-        - 🖼️ **Images:** PNG, JPEG, TIFF, BMP
-        
-        **Processing Time:** ~30 seconds per page/image
-        
-        **Features:**
-        - 📄 Scanned Documents → Searchable text via OCR
-        - 📱 Screenshots → Text extraction
-        - 📊 Charts & Graphs → Label and annotation extraction
-        - 🧪 Technical Diagrams → Text element extraction
-        - ✍️ Handwritten Notes → Clear handwriting OCR
-        - 📝 Word Documents → Full text extraction
-        - 📊 Excel Spreadsheets → Data and text extraction
-        """)
-    
-=======
->>>>>>> 99fe1f9d064d750dec8c5a0cf8de004641d1b0dc
     # Processing buttons
     col1, col2 = st.columns(2)
     
@@ -429,11 +561,7 @@ with st.sidebar:
                         st.error("Failed to update extraction script")
                         status.update(label="❌ Update Failed", state="error")
         else:
-<<<<<<< HEAD
-            st.warning("📝 Please upload a document/image file or enter a URL first")
-=======
-            st.warning("📝 Please upload a PDF file or enter a URL first")
->>>>>>> 99fe1f9d064d750dec8c5a0cf8de004641d1b0dc
+            st.warning("📝 Please upload a document file or enter a URL first")
     
     # Process chunking
     if chunk_btn:
@@ -468,11 +596,7 @@ with st.sidebar:
                 status.update(label="❌ Embedding Failed", state="error")
 
 # Main content area for chat
-<<<<<<< HEAD
-st.markdown('<div class="main-header">📚 Document & Image Q&A Assistant</div>', unsafe_allow_html=True)
-=======
 st.markdown('<div class="main-header">📚 Document Q&A Assistant</div>', unsafe_allow_html=True)
->>>>>>> 99fe1f9d064d750dec8c5a0cf8de004641d1b0dc
 
 # Initialize session state for chat history
 if "messages" not in st.session_state:
@@ -486,11 +610,7 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 # Chat input
-<<<<<<< HEAD
-if prompt := st.chat_input("💬 Ask a question about the document or image..."):
-=======
 if prompt := st.chat_input("💬 Ask a question about the document..."):
->>>>>>> 99fe1f9d064d750dec8c5a0cf8de004641d1b0dc
     # Display user message
     with st.chat_message("user"):
         st.markdown(prompt)
