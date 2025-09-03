@@ -1,17 +1,11 @@
 requests
-<<<<<<< HEAD
-=======
 ipykernel
->>>>>>> 99fe1f9d064d750dec8c5a0cf8de004641d1b0dc
 python-dotenv
 openai
+mistralai
 pydantic
 docling
 lancedb
 streamlit
-<<<<<<< HEAD
 tiktoken
 scikit-learn
-=======
-tiktoken
->>>>>>> 99fe1f9d064d750dec8c5a0cf8de004641d1b0dc
