@@ -2,7 +2,7 @@ from docling.document_converter import DocumentConverter
 from utils.sitemap import get_sitemap_urls
 import os
 
-source = "temp_Sequence_Rules_EN.pdf"  # file path or URL
+source = "temp_test.png"  # file path or URL
 converter = DocumentConverter()
 doc = converter.convert(source).document
 
