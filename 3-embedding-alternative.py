@@ -154,15 +154,18 @@ for i, (chunk, filename) in enumerate(all_chunks):
 # Create data directory if it doesn't exist
 os.makedirs("data", exist_ok=True)
 
-# Save processed chunks to JSON with metadata about the embedding provider
+# Save processed chunks to provider-specific JSON file
 embeddings_data = {
     "embedding_provider": embedding_provider,
     "embedding_model": "text-embedding-3-large" if embedding_provider == "openai" else "mistral-embed",
     "chunks": processed_chunks
 }
 
-with open("data/embeddings.json", "w", encoding="utf-8") as f:
+# Create provider-specific filename
+embedding_filename = f"data/{embedding_provider}_embeddings.json"
+
+with open(embedding_filename, "w", encoding="utf-8") as f:
     json.dump(embeddings_data, f, indent=2, ensure_ascii=False)
 
-print(f"Successfully processed and saved {len(processed_chunks)} chunks to data/embeddings.json using {embedding_provider}")
+print(f"Successfully processed and saved {len(processed_chunks)} chunks to {embedding_filename} using {embedding_provider}")
 print("You can now use 4-search-alternative.py to search through these embeddings")
