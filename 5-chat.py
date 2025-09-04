@@ -304,9 +304,12 @@ def get_context(query: str, num_results: int = 5) -> str:
     Returns:
         str: Concatenated context from relevant chunks with source information
     """
-    # Load embeddings from JSON file (alternative approach)
+    # Load embeddings from provider-specific JSON file
+    current_embedding_provider = st.session_state.get("embedding_provider", "openai")
+    embedding_filename = f"data/{current_embedding_provider}_embeddings.json"
+    
     try:
-        with open("data/embeddings.json", "r", encoding="utf-8") as f:
+        with open(embedding_filename, "r", encoding="utf-8") as f:
             embeddings_data = json.load(f)
         
         # Check if it's the new format with metadata
@@ -315,36 +318,20 @@ def get_context(query: str, num_results: int = 5) -> str:
             stored_embedding_provider = embeddings_data.get("embedding_provider")
             chunks = embeddings_data["chunks"]
             
-            # Ensure we use the same provider for query as was used for embeddings
-            current_embedding_provider = st.session_state.get("embedding_provider", "openai")
+            # Check for provider mismatch (shouldn't happen with provider-specific files, but good to check)
             if stored_embedding_provider and stored_embedding_provider != current_embedding_provider:
-                st.error(f"❌ Embedding provider mismatch! Embeddings were created with {stored_embedding_provider.upper()}, but current setting is {current_embedding_provider.upper()}.")
-                st.error("Please regenerate embeddings with the current provider or switch to the provider used for creating these embeddings.")
+                st.error(f"❌ Embedding provider mismatch! File contains {stored_embedding_provider.upper()} embeddings, but current setting is {current_embedding_provider.upper()}.")
+                st.error(f"Please switch to {stored_embedding_provider.upper()} provider or regenerate embeddings with {current_embedding_provider.upper()}.")
                 st.info("Click the '🧬 Embed' button to regenerate embeddings with the current provider.")
                 return ""
         else:
-            # Old format without metadata - check dimension compatibility
+            # Old format without metadata - use as chunks directly
             chunks = embeddings_data
-            if chunks:
-                # Get a sample embedding to check dimensions
-                sample_embedding = np.array(chunks[0]["embedding"])
-                stored_dimension = sample_embedding.shape[0]
-                
-                # Get current provider's expected dimension
-                current_provider = st.session_state.get("embedding_provider", "openai")
-                if current_provider == "openai":
-                    expected_dimension = 3072  # text-embedding-3-large
-                else:
-                    expected_dimension = 1024  # mistral-embed
-                
-                if stored_dimension != expected_dimension:
-                    st.error(f"❌ Dimension mismatch! Stored embeddings have {stored_dimension} dimensions, but current provider expects {expected_dimension} dimensions.")
-                    st.error("Please regenerate embeddings with the current provider.")
-                    st.info("Click the '🧬 Embed' button to regenerate embeddings.")
-                    return ""
             
     except FileNotFoundError:
-        st.error("Embeddings file not found. Please run the alternative embedding script first.")
+        st.error(f"Embeddings file not found for {current_embedding_provider.upper()} provider.")
+        st.error(f"Please run the embedding process with {current_embedding_provider.upper()} provider first.")
+        st.info("Click the '🧬 Embed' button to create embeddings with the current provider.")
         return ""
     
     # Get embedding for query

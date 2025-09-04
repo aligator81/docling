@@ -1,3 +1,4 @@
+import argparse
 import json
 import numpy as np
 import os
@@ -6,26 +7,42 @@ from mistralai import Mistral
 from dotenv import load_dotenv
 from sklearn.metrics.pairwise import cosine_similarity
 
+# Parse command line arguments
+parser = argparse.ArgumentParser(description='Search embeddings using provider-specific files')
+parser.add_argument('--embedding-provider', type=str, default=None,
+                    help='Embedding provider: openai or mistral')
+parser.add_argument('--openai-api-key', type=str, default=None,
+                    help='OpenAI API key (required if using OpenAI)')
+parser.add_argument('--mistral-api-key', type=str, default=None,
+                    help='Mistral API key (required if using Mistral)')
+args = parser.parse_args()
+
+# Load environment variables as fallback
 load_dotenv()
 
-# Check which embedding provider to use
-embedding_provider = os.getenv("EMBEDDING_PROVIDER", "openai").lower()
+# Determine embedding provider - command line args take precedence
+if args.embedding_provider:
+    embedding_provider = args.embedding_provider.lower()
+else:
+    embedding_provider = os.getenv("EMBEDDING_PROVIDER", "openai").lower()
 
 # Initialize clients based on provider
 openai_client = None
 mistral_client = None
 
 if embedding_provider == "openai":
-    api_key = os.getenv("OPENAI_API_KEY")
+    # Get API key - command line args take precedence over env vars
+    api_key = args.openai_api_key or os.getenv("OPENAI_API_KEY")
     if not api_key:
-        print("OPENAI_API_KEY environment variable is not set. Please configure it in your .env file.")
+        print("OpenAI API key is required. Provide it via --openai-api-key argument or OPENAI_API_KEY environment variable.")
         exit(1)
     openai_client = OpenAI(api_key=api_key)
     print("Using OpenAI for embeddings")
 elif embedding_provider == "mistral":
-    api_key = os.getenv("MISTRAL_API_KEY")
+    # Get API key - command line args take precedence over env vars
+    api_key = args.mistral_api_key or os.getenv("MISTRAL_API_KEY")
     if not api_key:
-        print("MISTRAL_API_KEY environment variable is not set. Please configure it in your .env file.")
+        print("Mistral API key is required. Provide it via --mistral-api-key argument or MISTRAL_API_KEY environment variable.")
         exit(1)
     mistral_client = Mistral(api_key=api_key)
     print("Using Mistral for embeddings")
@@ -50,12 +67,28 @@ def get_embedding(text):
 
 def search_embeddings(query, top_k=3):
     """Search through stored embeddings for similar content"""
-    # Load embeddings from JSON file
+    # Load embeddings from provider-specific JSON file
+    embedding_filename = f"data/{embedding_provider}_embeddings.json"
     try:
-        with open("data/embeddings.json", "r", encoding="utf-8") as f:
-            chunks = json.load(f)
+        with open(embedding_filename, "r", encoding="utf-8") as f:
+            embeddings_data = json.load(f)
+        
+        # Check if it's the new format with metadata
+        if isinstance(embeddings_data, dict) and "chunks" in embeddings_data:
+            stored_embedding_provider = embeddings_data.get("embedding_provider")
+            chunks = embeddings_data["chunks"]
+            
+            # Check for provider mismatch (shouldn't happen with provider-specific files, but good to check)
+            if stored_embedding_provider and stored_embedding_provider != embedding_provider:
+                print(f"❌ Error: Embeddings file contains {stored_embedding_provider.upper()} embeddings, but current setting is {embedding_provider.upper()}")
+                print(f"Please use the correct provider or regenerate embeddings with {embedding_provider.upper()}.")
+                return []
+        else:
+            # Old format without metadata - use as chunks directly
+            chunks = embeddings_data
+            
     except FileNotFoundError:
-        print("Error: embeddings.json not found. Please run 3-embedding-alternative.py first.")
+        print(f"Error: {embedding_filename} not found. Please run 3-embedding-alternative.py with --embedding-provider {embedding_provider} first.")
         return []
     
     # Get embedding for query
