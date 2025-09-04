@@ -236,8 +236,27 @@ def run_chunking():
 def run_embedding():
     """Run the embedding process"""
     try:
+        # Build command with API keys from session state
+        cmd = [sys.executable, "3-embedding-alternative.py"]
+        
+        # Add embedding provider argument
+        embedding_provider = st.session_state.get("embedding_provider", "openai")
+        cmd.extend(["--embedding-provider", embedding_provider])
+        
+        # Add API key arguments based on provider
+        if embedding_provider == "openai":
+            if st.session_state.openai_client:
+                # Extract API key from the client
+                api_key = st.session_state.openai_client.api_key
+                cmd.extend(["--openai-api-key", api_key])
+        elif embedding_provider == "mistral":
+            if st.session_state.mistral_client:
+                # Extract API key from the client (Mistral stores it in sdk_configuration.security.api_key)
+                api_key = st.session_state.mistral_client.sdk_configuration.security.api_key
+                cmd.extend(["--mistral-api-key", api_key])
+        
         result = subprocess.run(
-            [sys.executable, "3-embedding-alternative.py"],
+            cmd,
             capture_output=True,
             text=True,
             cwd=os.getcwd(),
@@ -288,7 +307,42 @@ def get_context(query: str, num_results: int = 5) -> str:
     # Load embeddings from JSON file (alternative approach)
     try:
         with open("data/embeddings.json", "r", encoding="utf-8") as f:
-            chunks = json.load(f)
+            embeddings_data = json.load(f)
+        
+        # Check if it's the new format with metadata
+        original_provider = None
+        if isinstance(embeddings_data, dict) and "chunks" in embeddings_data:
+            stored_embedding_provider = embeddings_data.get("embedding_provider")
+            chunks = embeddings_data["chunks"]
+            
+            # Ensure we use the same provider for query as was used for embeddings
+            current_embedding_provider = st.session_state.get("embedding_provider", "openai")
+            if stored_embedding_provider and stored_embedding_provider != current_embedding_provider:
+                st.error(f"❌ Embedding provider mismatch! Embeddings were created with {stored_embedding_provider.upper()}, but current setting is {current_embedding_provider.upper()}.")
+                st.error("Please regenerate embeddings with the current provider or switch to the provider used for creating these embeddings.")
+                st.info("Click the '🧬 Embed' button to regenerate embeddings with the current provider.")
+                return ""
+        else:
+            # Old format without metadata - check dimension compatibility
+            chunks = embeddings_data
+            if chunks:
+                # Get a sample embedding to check dimensions
+                sample_embedding = np.array(chunks[0]["embedding"])
+                stored_dimension = sample_embedding.shape[0]
+                
+                # Get current provider's expected dimension
+                current_provider = st.session_state.get("embedding_provider", "openai")
+                if current_provider == "openai":
+                    expected_dimension = 3072  # text-embedding-3-large
+                else:
+                    expected_dimension = 1024  # mistral-embed
+                
+                if stored_dimension != expected_dimension:
+                    st.error(f"❌ Dimension mismatch! Stored embeddings have {stored_dimension} dimensions, but current provider expects {expected_dimension} dimensions.")
+                    st.error("Please regenerate embeddings with the current provider.")
+                    st.info("Click the '🧬 Embed' button to regenerate embeddings.")
+                    return ""
+            
     except FileNotFoundError:
         st.error("Embeddings file not found. Please run the alternative embedding script first.")
         return ""

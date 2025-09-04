@@ -1,3 +1,4 @@
+import argparse
 from typing import List
 import json
 import os
@@ -10,26 +11,42 @@ from openai import OpenAI
 from mistralai import Mistral
 from utils.tokenizer import OpenAITokenizerWrapper
 
+# Parse command line arguments
+parser = argparse.ArgumentParser(description='Generate embeddings for document chunks')
+parser.add_argument('--embedding-provider', type=str, default=None,
+                    help='Embedding provider: openai or mistral')
+parser.add_argument('--openai-api-key', type=str, default=None,
+                    help='OpenAI API key (required if using OpenAI)')
+parser.add_argument('--mistral-api-key', type=str, default=None,
+                    help='Mistral API key (required if using Mistral)')
+args = parser.parse_args()
+
+# Load environment variables as fallback
 load_dotenv()
 
-# Check which embedding provider to use
-embedding_provider = os.getenv("EMBEDDING_PROVIDER", "openai").lower()
+# Determine embedding provider - command line args take precedence
+if args.embedding_provider:
+    embedding_provider = args.embedding_provider.lower()
+else:
+    embedding_provider = os.getenv("EMBEDDING_PROVIDER", "openai").lower()
 
 # Initialize clients based on provider
 openai_client = None
 mistral_client = None
 
 if embedding_provider == "openai":
-    api_key = os.getenv("OPENAI_API_KEY")
+    # Get API key - command line args take precedence over env vars
+    api_key = args.openai_api_key or os.getenv("OPENAI_API_KEY")
     if not api_key:
-        print("OPENAI_API_KEY environment variable is not set. Please configure it in your .env file.")
+        print("OpenAI API key is required. Provide it via --openai-api-key argument or OPENAI_API_KEY environment variable.")
         exit(1)
     openai_client = OpenAI(api_key=api_key)
     print("Using OpenAI for embeddings")
 elif embedding_provider == "mistral":
-    api_key = os.getenv("MISTRAL_API_KEY")
+    # Get API key - command line args take precedence over env vars
+    api_key = args.mistral_api_key or os.getenv("MISTRAL_API_KEY")
     if not api_key:
-        print("MISTRAL_API_KEY environment variable is not set. Please configure it in your .env file.")
+        print("Mistral API key is required. Provide it via --mistral-api-key argument or MISTRAL_API_KEY environment variable.")
         exit(1)
     mistral_client = Mistral(api_key=api_key)
     print("Using Mistral for embeddings")
@@ -137,9 +154,15 @@ for i, (chunk, filename) in enumerate(all_chunks):
 # Create data directory if it doesn't exist
 os.makedirs("data", exist_ok=True)
 
-# Save processed chunks to JSON
+# Save processed chunks to JSON with metadata about the embedding provider
+embeddings_data = {
+    "embedding_provider": embedding_provider,
+    "embedding_model": "text-embedding-3-large" if embedding_provider == "openai" else "mistral-embed",
+    "chunks": processed_chunks
+}
+
 with open("data/embeddings.json", "w", encoding="utf-8") as f:
-    json.dump(processed_chunks, f, indent=2, ensure_ascii=False)
+    json.dump(embeddings_data, f, indent=2, ensure_ascii=False)
 
 print(f"Successfully processed and saved {len(processed_chunks)} chunks to data/embeddings.json using {embedding_provider}")
 print("You can now use 4-search-alternative.py to search through these embeddings")
