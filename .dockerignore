@@ -1,52 +1,56 @@
+# Git
+.git
+.gitignore
+
 # Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
+__pycache__
+*.pyc
+*.pyo
+*.pyd
 .Python
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+env
+pip-log.txt
+pip-delete-this-directory.txt
+.tox
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.git
+.mypy_cache
+.pytest_cache
+.hypothesis
 
 # IDE
-.vscode/
-.idea/
+.vscode
+.idea
 *.swp
 *.swo
-*~
 
 # OS
 .DS_Store
 Thumbs.db
 
+# Data directories (exclude large files but keep structure)
+data/uploads/*
+!data/uploads/.gitkeep
+output/*
+!output/.gitkeep
+cache/*
+!cache/.gitkeep
+
+# Environment files
+.env.local
+.env.production
+.env.staging
+
 # Logs
 *.log
 logs/
 
-# Data and output directories (mounted as volumes)
-data/
-output/
-
-# Docker
-Dockerfile
-docker-compose.yml
-.dockerignore
-
-# Git
-.git/
-.gitignore
-
-# Environment files (except .env.example)
-.env
-.env.local
-.env.prod
-
-# Large files
-*.pdf
-*.docx
-*.pptx
-*.xlsx
-*.zip
-*.tar.gz
+# Temporary files
+*.tmp
+*.temp

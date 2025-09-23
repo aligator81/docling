@@ -1,0 +1,48 @@
+version: 1
+name: docling-app
+description: "Document Q&A Assistant with Streamlit interface"
+
+build:
+  dockerfile: Dockerfile
+  context: .
+
+deploy:
+  replicas: 1
+  resources:
+    memory: 1G
+    cpu: 0.5
+  healthcheck:
+    path: /_stcore/health
+    port: 8501
+    initial_delay: 30
+    timeout: 10
+    period: 60
+
+environment:
+  - OPENAI_API_KEY=${OPENAI_API_KEY}
+  - MISTRAL_API_KEY=${MISTRAL_API_KEY}
+  - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-openai}
+  - NEON_CONNECTION_STRING=${NEON_CONNECTION_STRING}
+
+ports:
+  - 8501
+
+volumes:
+  - type: directory
+    source: data
+    target: /app/data
+    read_only: false
+
+# Auto-deploy settings
+auto_deploy:
+  enabled: true
+  branch: main
+
+# Health checks
+health_checks:
+  - type: http
+    path: /_stcore/health
+    port: 8501
+    timeout: 10
+    interval: 30
+    retries: 3

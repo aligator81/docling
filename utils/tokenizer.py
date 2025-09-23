@@ -44,6 +44,14 @@ class OpenAITokenizerWrapper(PreTrainedTokenizerBase):
     def save_vocabulary(self, *args) -> Tuple[str]:
         return ()
 
+    def __len__(self) -> int:
+        """Return the vocabulary size."""
+        return self.vocab_size
+
+    def encode(self, text: str, **kwargs) -> List[int]:
+        """Encode text into token IDs."""
+        return self.tokenizer.encode(text)
+
     @classmethod
     def from_pretrained(cls, *args, **kwargs):
         """Class method to match HuggingFace's interface."""

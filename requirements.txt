@@ -5,7 +5,12 @@ openai
 mistralai
 pydantic
 docling
-lancedb
 streamlit
 tiktoken
 scikit-learn
+pymupdf
+pillow
+pytesseract
+psutil
+numpy
+psycopg2-binary

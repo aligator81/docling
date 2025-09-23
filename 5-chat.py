@@ -1,4 +1,3 @@
-
 import streamlit as st
 import json
 import numpy as np
@@ -6,10 +5,15 @@ import subprocess
 import os
 import re
 import sys
+from datetime import datetime
 from openai import OpenAI
 from mistralai import Mistral
 from dotenv import load_dotenv
 from sklearn.metrics.pairwise import cosine_similarity
+import requests
+import tempfile
+import psycopg2
+from psycopg2.extras import Json
 
 # Load environment variables
 load_dotenv()
@@ -25,6 +29,30 @@ if "llm_provider" not in st.session_state:
     st.session_state.llm_provider = "openai"
 if "embedding_provider" not in st.session_state:
     st.session_state.embedding_provider = "openai"
+if "extraction_provider" not in st.session_state:
+    st.session_state.extraction_provider = "docling"
+# Initialize session state for uploaded documents
+if "uploaded_documents" not in st.session_state:
+    st.session_state.uploaded_documents = []
+    
+    # Auto-reload uploaded documents from disk
+    uploads_dir = "data/uploads"
+    if os.path.exists(uploads_dir):
+        for filename in os.listdir(uploads_dir):
+            filepath = os.path.join(uploads_dir, filename)
+            if os.path.isfile(filepath):
+                try:
+                    file_size = os.path.getsize(filepath)
+                    upload_time = datetime.fromtimestamp(os.path.getctime(filepath)).strftime("%H:%M:%S")
+                    doc_info = {
+                        "name": filename,
+                        "size": f"{file_size / 1024:.1f} KB",
+                        "upload_time": upload_time,
+                        "source_path": filepath
+                    }
+                    st.session_state.uploaded_documents.append(doc_info)
+                except Exception as e:
+                    st.error(f"Error loading file {filename}: {e}")
 
 def configure_api_keys():
     """Display API key configuration interface"""
@@ -49,6 +77,15 @@ def configure_api_keys():
         options=["openai", "mistral"],
         index=0,
         help="Select which provider to use for text embeddings"
+    )
+    
+    # Extraction provider selection
+    st.markdown("#### Extraction Provider")
+    extraction_provider = st.selectbox(
+        "Choose Extraction Provider:",
+        options=["docling", "mistral"],
+        index=0,
+        help="Select which provider to use for document extraction (Docling = local, Mistral = cloud OCR)"
     )
     
     with col1:
@@ -132,6 +169,7 @@ def configure_api_keys():
             if success:
                 st.session_state.llm_provider = provider_choice
                 st.session_state.embedding_provider = embedding_provider
+                st.session_state.extraction_provider = extraction_provider
                 st.session_state.api_keys_configured = True
                 st.success("✅ Configuration successful! You can now use the application.")
                 st.rerun()
@@ -155,70 +193,443 @@ if not st.session_state.api_keys_configured:
     configure_api_keys()
     st.stop()
 
+# Check if API keys are configured
+if not st.session_state.api_keys_configured:
+    st.warning("⚠️ Please configure your API keys in the sidebar to use the application.")
+    st.stop()
+
 # Get the configured clients and settings
 openai_client = st.session_state.openai_client
 mistral_client = st.session_state.mistral_client
 llm_provider = st.session_state.llm_provider
 embedding_provider = st.session_state.get("embedding_provider", "openai")
+extraction_provider = st.session_state.get("extraction_provider", "docling")
 
+# Neon database connection
+NEON_CONNECTION_STRING = "postgresql://neondb_owner:npg_N7vynH6dQCer@ep-gentle-moon-aeeiaefq-pooler.c-2.us-east-2.aws.neon.tech/neondb?channel_binding=require&sslmode=require"
+
+def get_db_connection():
+    """Get connection to Neon database"""
+    try:
+        conn = psycopg2.connect(NEON_CONNECTION_STRING)
+        return conn
+    except Exception as e:
+        st.error(f"Error connecting to database: {e}")
+        return None
+
+def search_embeddings_neon(query, top_k=3):
+    """Search through embeddings stored in Neon database"""
+    conn = get_db_connection()
+    if not conn:
+        st.error("Failed to connect to database")
+        return []
+    
+    try:
+        # Get embedding for query
+        query_embedding = get_embedding(query)
+        query_embedding_array = np.array(query_embedding).astype('float32')
+        
+        # Use vector similarity search
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    id, text, filename, original_filename, page_numbers, title,
+                    embedding_vector, embedding_provider, embedding_model,
+                    1 - (embedding_vector <=> %s::vector) as similarity
+                FROM embeddings
+                WHERE embedding_provider = %s
+                ORDER BY embedding_vector <=> %s::vector
+                LIMIT %s
+            """, (query_embedding_array.tolist(), embedding_provider, query_embedding_array.tolist(), top_k))
+            
+            results = []
+            for row in cur.fetchall():
+                result = {
+                    "id": row[0],
+                    "text": row[1],
+                    "filename": row[2],
+                    "original_filename": row[3],
+                    "page_numbers": row[4],
+                    "title": row[5],
+                    "embedding": row[6],
+                    "embedding_provider": row[7],
+                    "embedding_model": row[8],
+                    "similarity": float(row[9])
+                }
+                results.append((result["similarity"], result))
+            
+            return results
+            
+    except Exception as e:
+        st.error(f"Error searching embeddings: {e}")
+        return []
+    finally:
+        conn.close()
+
+def check_database_has_embeddings(provider):
+    """Check if database has embeddings for the specified provider"""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM embeddings WHERE embedding_provider = %s", (provider,))
+            count = cur.fetchone()[0]
+            return count > 0
+    except Exception as e:
+        st.error(f"Error checking database: {e}")
+        return False
+    finally:
+        conn.close()
+
+def get_documents_from_db():
+    """Get all documents from the database"""
+    conn = get_db_connection()
+    if not conn:
+        return []
+    
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, filename, file_path, file_size, file_type, upload_date, processed, processing_date
+                FROM documents
+                ORDER BY upload_date DESC
+            """)
+            documents = []
+            for row in cur.fetchall():
+                doc = {
+                    "id": row[0],
+                    "filename": row[1],
+                    "file_path": row[2],
+                    "file_size": row[3],
+                    "file_type": row[4],
+                    "upload_date": row[5],
+                    "processed": row[6],
+                    "processing_date": row[7]
+                }
+                documents.append(doc)
+            return documents
+    except Exception as e:
+        st.error(f"Error fetching documents: {e}")
+        return []
+    finally:
+        conn.close()
+
+def get_chunks_from_db():
+    """Get all chunks from the database"""
+    conn = get_db_connection()
+    if not conn:
+        return []
+    
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT dc.id, d.filename, dc.chunk_text, dc.chunk_index, dc.page_numbers,
+                       dc.section_title, dc.chunk_type, dc.token_count, dc.created_at
+                FROM document_chunks dc
+                JOIN documents d ON dc.document_id = d.id
+                ORDER BY d.filename, dc.chunk_index
+            """)
+            chunks = []
+            for row in cur.fetchall():
+                chunk = {
+                    "id": row[0],
+                    "filename": row[1],
+                    "chunk_text": row[2],
+                    "chunk_index": row[3],
+                    "page_numbers": row[4],
+                    "section_title": row[5],
+                    "chunk_type": row[6],
+                    "token_count": row[7],
+                    "created_at": row[8]
+                }
+                chunks.append(chunk)
+            return chunks
+    except Exception as e:
+        st.error(f"Error fetching chunks: {e}")
+        return []
+    finally:
+        conn.close()
+
+def get_embeddings_from_db():
+    """Get all embeddings from the database"""
+    conn = get_db_connection()
+    if not conn:
+        return []
+    
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, filename, original_filename, page_numbers, title,
+                       embedding_provider, embedding_model, created_at
+                FROM embeddings
+                ORDER BY created_at DESC
+            """)
+            embeddings = []
+            for row in cur.fetchall():
+                embedding = {
+                    "id": row[0],
+                    "filename": row[1],
+                    "original_filename": row[2],
+                    "page_numbers": row[3],
+                    "title": row[4],
+                    "embedding_provider": row[5],
+                    "embedding_model": row[6],
+                    "created_at": row[7]
+                }
+                embeddings.append(embedding)
+            return embeddings
+    except Exception as e:
+        st.error(f"Error fetching embeddings: {e}")
+        return []
+    finally:
+        conn.close()
+
+def delete_document_from_db(doc_id):
+    """Delete a document and its related data from the database"""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    
+    try:
+        with conn.cursor() as cur:
+            # Delete related embeddings first
+            cur.execute("DELETE FROM embeddings WHERE chunk_id IN (SELECT id FROM document_chunks WHERE document_id = %s)", (doc_id,))
+            # Delete related chunks
+            cur.execute("DELETE FROM document_chunks WHERE document_id = %s", (doc_id,))
+            # Delete processing logs
+            cur.execute("DELETE FROM processing_logs WHERE document_id = %s", (doc_id,))
+            # Finally delete the document
+            cur.execute("DELETE FROM documents WHERE id = %s", (doc_id,))
+            conn.commit()
+            return True
+    except Exception as e:
+        st.error(f"Error deleting document: {e}")
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+def delete_chunk_from_db(chunk_id):
+    """Delete a chunk and its related embeddings from the database"""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    
+    try:
+        with conn.cursor() as cur:
+            # Delete related embeddings first
+            cur.execute("DELETE FROM embeddings WHERE chunk_id = %s", (chunk_id,))
+            # Delete the chunk
+            cur.execute("DELETE FROM document_chunks WHERE id = %s", (chunk_id,))
+            conn.commit()
+            return True
+    except Exception as e:
+        st.error(f"Error deleting chunk: {e}")
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+def delete_embedding_from_db(embedding_id):
+    """Delete an embedding from the database"""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM embeddings WHERE id = %s", (embedding_id,))
+            conn.commit()
+            return True
+    except Exception as e:
+        st.error(f"Error deleting embedding: {e}")
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+
+def insert_document_to_db(filename, file_path, file_size, file_type, content=None):
+    """Insert a document into the database"""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    
+    try:
+        with conn.cursor() as cur:
+            # Check if document already exists
+            cur.execute("SELECT id FROM documents WHERE filename = %s", (filename,))
+            existing = cur.fetchone()
+            
+            if not existing:
+                # Insert new document
+                cur.execute("""
+                    INSERT INTO documents (filename, file_path, file_size, file_type, content, processed)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, (filename, file_path, file_size, file_type, content, False))
+                conn.commit()
+                return True
+            else:
+                # Document already exists, update the record
+                cur.execute("""
+                    UPDATE documents
+                    SET file_path = %s, file_size = %s, file_type = %s, content = %s, processed = %s
+                    WHERE filename = %s
+                """, (file_path, file_size, file_type, content, False, filename))
+                conn.commit()
+                return True
+    except Exception as e:
+        st.error(f"Error inserting document into database: {e}")
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+def add_uploaded_document(uploaded_file):
+    """Add uploaded document to session state, save to uploads folder, and insert into database"""
+    if uploaded_file:
+        # Save uploaded file to data directory
+        data_dir = "data/uploads"
+        os.makedirs(data_dir, exist_ok=True)
+        upload_file_path = f"{data_dir}/{uploaded_file.name}"
+        
+        try:
+            with open(upload_file_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            
+            # Read file content for text files
+            content = None
+            file_type = uploaded_file.name.split('.')[-1].lower()
+            if file_type in ['txt', 'md', 'html']:
+                try:
+                    with open(upload_file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                except:
+                    content = None
+            
+            # Insert document into database
+            if insert_document_to_db(
+                filename=uploaded_file.name,
+                file_path=upload_file_path,
+                file_size=uploaded_file.size,
+                file_type=file_type,
+                content=content
+            ):
+                doc_info = {
+                    "name": uploaded_file.name,
+                    "size": f"{uploaded_file.size / 1024:.1f} KB",
+                    "upload_time": datetime.now().strftime("%H:%M:%S"),
+                    "source_path": upload_file_path
+                }
+                st.session_state.uploaded_documents.append(doc_info)
+                st.success(f"✅ File '{uploaded_file.name}' uploaded successfully and added to database!")
+            else:
+                st.error(f"❌ Failed to add file '{uploaded_file.name}' to database")
+                
+        except Exception as e:
+            st.error(f"Error saving file: {e}")
 
 def update_extraction_source(source):
     """Update the source (URL or file path) in 1-extraction.py"""
     try:
-        with open("1-extraction.py", "r", encoding="utf-8") as f:
-            content = f.read()
-        
-        # Update the source line (line 5)
-        new_content = re.sub(
-            r'^source = ".*"',
-            f'source = "{source}"',
-            content,
-            flags=re.MULTILINE
-        )
-        
-        with open("1-extraction.py", "w", encoding="utf-8") as f:
-            f.write(new_content)
-        
+        # For command line arguments, we don't need to modify the source code
+        # The extraction script now uses argparse and takes the source as command line argument
+        # We'll handle this by passing the source directly to the subprocess
         return True
     except Exception as e:
         st.error(f"Error updating extraction source: {e}")
         return False
 
 
-def run_extraction():
-    """Run the extraction process"""
+import requests
+import tempfile
+
+def download_file(url):
+    """Downloads a file from a URL and saves it to a temporary file."""
     try:
+        response = requests.get(url, stream=True)
+        response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
+        
+        # Determine the file extension from the URL
+        file_extension = os.path.splitext(url)[1]
+        
+        # Create a temporary file with the correct extension
+        temp_file = tempfile.NamedTemporaryFile(suffix=file_extension, delete=False)
+        
+        # Write the content to the temporary file
+        for chunk in response.iter_content(chunk_size=8192):
+            temp_file.write(chunk)
+        
+        temp_file.close()
+        return temp_file.name
+    except requests.exceptions.RequestException as e:
+        print(f"Error downloading file: {e}")
+        return None
+
+def run_extraction(source_path):
+    """Run the extraction process with the given source path using selected provider"""
+    st.write(f"Running extraction with source: {source_path}")  # Log the source path
+    if source_path.startswith("http://") or source_path.startswith("https://"):
+        st.write("Downloading file from URL...")
+        downloaded_file = download_file(source_path)
+        if downloaded_file:
+            st.write(f"Downloaded file to: {downloaded_file}")
+            source_path = downloaded_file
+        else:
+            st.error("Failed to download file from URL.")
+            return False, "Failed to download file from URL."
+    
+    try:
+        # Use database-based extraction for all providers
+        extraction_provider = st.session_state.get("extraction_provider", "docling")
+        
+        if extraction_provider == "mistral":
+            # Use unified extraction system with Mistral OCR preference
+            cmd = [sys.executable, "1-extraction.py", "--source", source_path, "--prefer-cloud"]
+        else:
+            # Use unified extraction system with database processing
+            cmd = [sys.executable, "1-extraction.py", "--process-db", "--mark-processed"]
+        
         result = subprocess.run(
-            [sys.executable, "1-extraction.py"],
+            cmd,
             capture_output=True,
-            text=True,
-            cwd=os.getcwd(),
+            encoding="utf-8",
             timeout=300  # 5 minute timeout
         )
         
+        # If Docling extraction fails, try Mistral OCR as fallback for scanned/Arabic documents
+        if result.returncode != 0 and extraction_provider == "docling":
+            st.warning("Docling extraction failed, trying unified system with Mistral OCR...")
+            cmd = [sys.executable, "1-extraction.py", "--source", source_path, "--prefer-cloud"]
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                encoding="utf-8",
+                timeout=300
+            )
+        
         if result.returncode == 0:
-            return True, result.stdout
+            # For database-based extraction, we don't need to read a file
+            # The content is stored directly in the database
+            print(f"Extraction successful! Content stored in database.")
+            return True, "Content extracted and stored in database successfully"
         else:
-            # Check for specific docling/huggingface errors
-            error_output = result.stderr
-            if "init_empty_weights" in error_output:
-                error_output += "\n\n⚠️  This appears to be a Hugging Face transformers compatibility issue. Try updating transformers: pip install --upgrade transformers"
-            elif "huggingface" in error_output.lower():
-                error_output += "\n\n⚠️  Hugging Face model loading issue detected. This may require package updates."
-            return False, error_output
-    except subprocess.TimeoutExpired:
-        return False, "Extraction timed out after 5 minutes. The document may be too large or the server is slow."
+            error_msg = result.stderr or "Extraction failed"
+            print(f"Extraction failed with error: {error_msg}")
+            return False, error_msg
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
 
 
 def run_chunking():
-    """Run the chunking process"""
+    """Run the chunking process using database-based chunking"""
     try:
         result = subprocess.run(
-            [sys.executable, "2-chunking.py"],
+            [sys.executable, "2-chunking-neon.py"],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
             cwd=os.getcwd(),
             timeout=300  # 5 minute timeout
         )
@@ -227,9 +638,9 @@ def run_chunking():
             return True, result.stdout
         else:
             return False, result.stderr
-    except subprocess.TimeoutExpired:
-        return False, "Chunking timed out after 5 minutes."
     except Exception as e:
+        if "timed out" in str(e):
+            return False, "Chunking timed out after 5 minutes."
         return False, f"Unexpected error: {str(e)}"
 
 
@@ -237,7 +648,7 @@ def run_embedding():
     """Run the embedding process"""
     try:
         # Build command with API keys from session state
-        cmd = [sys.executable, "3-embedding-alternative.py"]
+        cmd = [sys.executable, "3-embedding-neon.py"]
         
         # Add embedding provider argument
         embedding_provider = st.session_state.get("embedding_provider", "openai")
@@ -258,7 +669,7 @@ def run_embedding():
         result = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
             cwd=os.getcwd(),
             timeout=300  # 5 minute timeout
         )
@@ -267,16 +678,15 @@ def run_embedding():
             return True, result.stdout
         else:
             return False, result.stderr
-    except subprocess.TimeoutExpired:
-        return False, "Embedding timed out after 5 minutes."
     except Exception as e:
+        if "timed out" in str(e):
+            return False, "Embedding timed out after 5 minutes."
+        st.error(f"Embedding error: {e}") # Display error in Streamlit
         return False, f"Unexpected error: {str(e)}"
 
 
 def get_embedding(text):
-    """Get embedding for text using the configured embedding provider"""
-    embedding_provider = st.session_state.get("embedding_provider", "openai")
-    
+    """Get embedding for text using configured provider"""
     if embedding_provider == "openai":
         response = openai_client.embeddings.create(
             model="text-embedding-3-large",
@@ -289,91 +699,58 @@ def get_embedding(text):
             inputs=[text]
         )
         return response.data[0].embedding
-    else:
-        raise ValueError(f"Unsupported embedding provider: {embedding_provider}")
 
+def search_embeddings(query, top_k=3):
+    """Search through stored embeddings for similar content using ONLY Neon database"""
+    # Use ONLY Neon database - no JSON fallback
+    neon_results = search_embeddings_neon(query, top_k)
+    
+    if not neon_results:
+        # Check if database has any embeddings for this provider
+        if not check_database_has_embeddings(embedding_provider):
+            st.error(f"❌ No embeddings found in Neon database for provider: {embedding_provider}")
+            st.error(f"Please run 3-embedding-neon.py with --embedding-provider {embedding_provider} first.")
+        else:
+            st.warning("⚠️ No matching embeddings found for your query in the Neon database.")
+    
+    return neon_results
 
-def get_context(query: str, num_results: int = 5) -> str:
-    """Search the database for relevant context.
+def get_context(query: str, source_file: str) -> str:
+    """Get relevant context from embeddings based on user query using ONLY Neon database.
 
     Args:
-        query: User's question
-        table: LanceDB table object
-        num_results: Number of results to return
+        query: User's question for semantic search
+        source_file: Path to the source file (not used for fallback - kept for API compatibility)
 
     Returns:
-        str: Concatenated context from relevant chunks with source information
+        str: Relevant context from Neon database embeddings
     """
-    # Load embeddings from provider-specific JSON file
-    current_embedding_provider = st.session_state.get("embedding_provider", "openai")
-    embedding_filename = f"data/{current_embedding_provider}_embeddings.json"
-    
     try:
-        with open(embedding_filename, "r", encoding="utf-8") as f:
-            embeddings_data = json.load(f)
+        # Use ONLY Neon database for semantic search
+        results = search_embeddings(query, top_k=3)
         
-        # Check if it's the new format with metadata
-        original_provider = None
-        if isinstance(embeddings_data, dict) and "chunks" in embeddings_data:
-            stored_embedding_provider = embeddings_data.get("embedding_provider")
-            chunks = embeddings_data["chunks"]
+        if results:
+            # Build context from top results
+            context_parts = []
+            for i, (score, result) in enumerate(results, 1):
+                context_parts.append(f"Relevant section {i} (similarity: {score:.3f}):")
+                context_parts.append(result["text"])
+                context_parts.append("---")
             
-            # Check for provider mismatch (shouldn't happen with provider-specific files, but good to check)
-            if stored_embedding_provider and stored_embedding_provider != current_embedding_provider:
-                st.error(f"❌ Embedding provider mismatch! File contains {stored_embedding_provider.upper()} embeddings, but current setting is {current_embedding_provider.upper()}.")
-                st.error(f"Please switch to {stored_embedding_provider.upper()} provider or regenerate embeddings with {current_embedding_provider.upper()}.")
-                st.info("Click the '🧬 Embed' button to regenerate embeddings with the current provider.")
-                return ""
+            context = "\n".join(context_parts)
+            st.success(f"✅ Found {len(results)} relevant sections using Neon database embeddings")
+            return context
         else:
-            # Old format without metadata - use as chunks directly
-            chunks = embeddings_data
+            st.error("❌ No relevant embeddings found in Neon database for your query.")
+            return ""
             
-    except FileNotFoundError:
-        st.error(f"Embeddings file not found for {current_embedding_provider.upper()} provider.")
-        st.error(f"Please run the embedding process with {current_embedding_provider.upper()} provider first.")
-        st.info("Click the '🧬 Embed' button to create embeddings with the current provider.")
+    except Exception as e:
+        st.error(f"Error retrieving context from Neon database: {str(e)}")
         return ""
-    
-    # Get embedding for query
-    query_embedding = get_embedding(query)
-    query_embedding = np.array(query_embedding).reshape(1, -1)
-    
-    # Calculate similarities
-    similarities = []
-    for chunk in chunks:
-        chunk_embedding = np.array(chunk["embedding"]).reshape(1, -1)
-        similarity = cosine_similarity(query_embedding, chunk_embedding)[0][0]
-        similarities.append((similarity, chunk))
-    
-    # Sort by similarity and get top results
-    similarities.sort(key=lambda x: x[0], reverse=True)
-    top_results = similarities[:num_results]
-    contexts = []
-
-    for score, result in top_results:
-        # Extract metadata
-        filename = result.get("filename")
-        page_numbers = result.get("page_numbers")
-        title = result.get("title")
-
-        # Build source citation
-        source_parts = []
-        if filename:
-            source_parts.append(filename)
-        if page_numbers:
-            source_parts.append(f"p. {', '.join(str(p) for p in page_numbers)}")
-
-        source = f"\nSource: {' - '.join(source_parts)}"
-        if title:
-            source += f"\nTitle: {title}"
-
-        contexts.append(f"{result['text']}{source}")
-
-    return "\n\n".join(contexts)
 
 
 def get_chat_response(messages, context: str) -> str:
-    """Get streaming response from the selected LLM API.
+    """Get response from the selected LLM API.
 
     Args:
         messages: Chat history
@@ -384,7 +761,7 @@ def get_chat_response(messages, context: str) -> str:
     """
     system_prompt = f"""You are a helpful assistant that answers questions based on the provided context.
     Use only the information from the context to answer questions. If you're unsure or the context
-    doesn't contain the relevant information, say so.
+    doesn't contain the relevant information, say so. Don't make up answers or use prior knowledge. Answer same in the document.
     Context:
     {context}
     """
@@ -392,36 +769,22 @@ def get_chat_response(messages, context: str) -> str:
     messages_with_context = [{"role": "system", "content": system_prompt}, *messages]
 
     if llm_provider == "openai":
-        # Create the streaming response with OpenAI
-        stream = openai_client.chat.completions.create(
+        # Create the response with OpenAI (non-streaming for better container compatibility)
+        response = openai_client.chat.completions.create(
             model=st.session_state.get("openai_model", "gpt-4o-mini"),
             messages=messages_with_context,
             temperature=0.7,
-            stream=True,
         )
-        response = st.write_stream(stream)
-        return response
+        return response.choices[0].message.content
     
     elif llm_provider == "mistral":
-        # Create the streaming response with Mistral
-        stream = mistral_client.chat.stream(
+        # Create the response with Mistral (non-streaming for better container compatibility)
+        response = mistral_client.chat.completions.create(
             model=st.session_state.get("mistral_model", "mistral-large-latest"),
             messages=messages_with_context,
             temperature=0.7,
         )
-        
-        # Create a generator that extracts content from Mistral's streaming format
-        def mistral_stream_generator():
-            for chunk in stream:
-                if hasattr(chunk, 'data') and hasattr(chunk.data, 'choices'):
-                    if chunk.data.choices and chunk.data.choices[0].delta.content:
-                        yield chunk.data.choices[0].delta.content
-                elif hasattr(chunk, 'choices'):
-                    if chunk.choices and chunk.choices[0].delta.content:
-                        yield chunk.choices[0].delta.content
-        
-        response = st.write_stream(mistral_stream_generator())
-        return response
+        return response.choices[0].message.content
 
 
 # Initialize Streamlit app with custom styling
@@ -436,70 +799,281 @@ st.set_page_config(
 st.markdown("""
     <style>
     .main-header {
-        font-size: 2.5rem;
-        font-weight: 700;
-        color: #1f77b4;
+        font-size: 2.8rem;
+        font-weight: 800;
         text-align: center;
         margin-bottom: 2rem;
-        padding: 1rem;
+        padding: 1.5rem;
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        border-radius: 10px;
+        border-radius: 15px;
         color: white;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        text-shadow: 1px 1px 2px rgba(0,0,0,0.2);
     }
     .sidebar-header {
-        font-size: 1.5rem;
-        font-weight: 600;
+        font-size: 1.6rem;
+        font-weight: 700;
         color: #2c3e50;
         margin-bottom: 1rem;
         padding-bottom: 0.5rem;
-        border-bottom: 2px solid #3498db;
+        border-bottom: 3px solid #3498db;
+        background: linear-gradient(90deg, #3498db, #2980b9);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
     }
     .upload-section {
-        background: #f8f9fa;
+        background: linear-gradient(145deg, #f8f9fa, #e9ecef);
         padding: 1.5rem;
-        border-radius: 10px;
-        border: 2px dashed #dee2e6;
+        border-radius: 12px;
+        border: 2px dashed #6c757d;
         margin-bottom: 1.5rem;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.05);
     }
     .button-primary {
         background: linear-gradient(45deg, #667eea, #764ba2) !important;
         border: none !important;
         color: white !important;
         font-weight: 600 !important;
-        border-radius: 8px !important;
-        padding: 0.5rem 1rem !important;
+        border-radius: 10px !important;
+        padding: 0.75rem 1.5rem !important;
+        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3) !important;
+        transition: all 0.3s ease !important;
+    }
+    .button-primary:hover {
+        transform: translateY(-2px) !important;
+        box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4) !important;
     }
     .button-secondary {
         background: linear-gradient(45deg, #6c757d, #495057) !important;
         border: none !important;
         color: white !important;
         font-weight: 500 !important;
-        border-radius: 8px !important;
-        padding: 0.5rem 1rem !important;
+        border-radius: 10px !important;
+        padding: 0.75rem 1.5rem !important;
+        box-shadow: 0 4px 15px rgba(108, 117, 125, 0.3) !important;
+        transition: all 0.3s ease !important;
+    }
+    .button-secondary:hover {
+        transform: translateY(-2px) !important;
+        box-shadow: 0 6px 20px rgba(108, 117, 125, 0.4) !important;
     }
     .chat-container {
-        max-width: 800px;
+        max-width: 900px;
         margin: 0 auto;
-        padding: 2rem;
+        padding: 1.5rem;
+        background: #ffffff;
+        border-radius: 10px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        border: 1px solid #e0e0e0;
+        min-height: 500px;
+        max-height: 600px;
+        overflow-y: auto;
+        margin-bottom: 1rem;
+        display: flex;
+        flex-direction: column;
+    }
+    .chat-messages {
+        flex: 1;
+        overflow-y: auto;
+        padding-right: 10px;
+    }
+    .chat-messages::-webkit-scrollbar {
+        width: 8px;
+    }
+    .chat-messages::-webkit-scrollbar-track {
+        background: #f1f1f1;
+        border-radius: 4px;
+    }
+    .chat-messages::-webkit-scrollbar-thumb {
+        background: #c1c1c1;
+        border-radius: 4px;
+    }
+    .chat-messages::-webkit-scrollbar-thumb:hover {
+        background: #a8a8a8;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 12px;
+        margin-bottom: 2rem;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 55px;
+        white-space: pre-wrap;
+        background-color: #f0f2f6;
+        border-radius: 8px 8px 0px 0px;
+        gap: 1px;
+        padding-top: 12px;
+        padding-bottom: 12px;
+        font-weight: 600;
+        font-size: 1.1rem;
+        transition: all 0.3s ease;
+    }
+    .stTabs [aria-selected="true"] {
+        background: linear-gradient(45deg, #1f77b4, #3498db) !important;
+        color: white !important;
+        box-shadow: 0 4px 15px rgba(31, 119, 180, 0.3);
     }
     .status-success {
-        background: #d4edda !important;
-        border-color: #c3e6cb !important;
+        background: linear-gradient(145deg, #d4edda, #c3e6cb) !important;
+        border-color: #28a745 !important;
         color: #155724 !important;
+        border-radius: 8px !important;
+        padding: 1rem !important;
     }
     .status-error {
-        background: #f8d7da !important;
-        border-color: #f5c6cb !important;
+        background: linear-gradient(145deg, #f8d7da, #f5c6cb) !important;
+        border-color: #dc3545 !important;
         color: #721c24 !important;
+        border-radius: 8px !important;
+        padding: 1rem !important;
+    }
+    .stChatMessage {
+        border-radius: 15px !important;
+        padding: 1rem !important;
+        margin: 0.5rem 0 !important;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1) !important;
+    }
+    .stChatMessage[data-testid="stChatMessage-user"] {
+        background: linear-gradient(145deg, #e3f2fd, #bbdefb) !important;
+        border-left: 4px solid #2196f3 !important;
+    }
+    .stChatMessage[data-testid="stChatMessage-assistant"] {
+        background: linear-gradient(145deg, #f3e5f5, #e1bee7) !important;
+        border-left: 4px solid #9c27b0 !important;
+    }
+    .stChatInput {
+        max-width: 900px !important;
+        margin: 0 auto !important;
+        border-radius: 25px !important;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1) !important;
+    }
+    .welcome-section {
+        background: linear-gradient(145deg, #ffffff, #f8f9fa);
+        padding: 2rem;
+        border-radius: 15px;
+        margin-bottom: 2rem;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.05);
+        border: 1px solid #e9ecef;
     }
     </style>
 """, unsafe_allow_html=True)
-
 # Sidebar for document processing
 with st.sidebar:
     st.markdown('<div class="sidebar-header">📄 Document Processing</div>', unsafe_allow_html=True)
     
-    # Display current LLM and embedding providers
+    # Upload section
+    st.markdown('<div class="upload-section">', unsafe_allow_html=True)
+    st.subheader("📁 Upload Document")
+    uploaded_file = st.file_uploader(
+        "Drag & drop or click to upload",
+        type=["pdf", "docx", "xlsx", "pptx", "md", "html", "htm", "xhtml", "png", "jpg", "jpeg", "tiff", "bmp"],
+        help="Upload a document for processing (PDF, DOCX, XLSX, PPTX, Markdown, HTML, Images)",
+        label_visibility="collapsed"
+    )
+    
+    # Add upload button
+    if uploaded_file is not None:
+        if st.button("📤 Add to Uploaded Documents", use_container_width=True):
+            # Check if this file is already in the uploaded documents
+            if not any(doc["name"] == uploaded_file.name for doc in st.session_state.uploaded_documents):
+                add_uploaded_document(uploaded_file)
+                st.rerun()
+            else:
+                st.warning("⚠️ File already uploaded")
+    
+    st.subheader("🔗 Or enter URL")
+    url = st.text_input(
+        "Document URL",
+        placeholder="https://example.com/document.pdf",
+        help="Enter URL to document or webpage (PDF, DOCX, HTML, etc.)",
+        label_visibility="collapsed"
+    )
+    
+    if url:
+        if st.button("📥 Add URL Document", use_container_width=True):
+            # Download the file from the URL
+            downloaded_file = download_file(url)
+            if downloaded_file:
+                # Extract filename from path
+                file_name = os.path.basename(downloaded_file)
+                
+                # Move file to uploads directory
+                data_dir = "data/uploads"
+                os.makedirs(data_dir, exist_ok=True)
+                upload_file_path = os.path.join(data_dir, file_name)
+                
+                try:
+                    os.rename(downloaded_file, upload_file_path)
+                    
+                    # Get file size and upload time
+                    file_size = os.path.getsize(upload_file_path)
+                    upload_time = datetime.now().strftime("%H:%M:%S")
+                    
+                    # Read file content for text files
+                    content = None
+                    file_type = file_name.split('.')[-1].lower()
+                    if file_type in ['txt', 'md', 'html']:
+                        try:
+                            with open(upload_file_path, 'r', encoding='utf-8') as f:
+                                content = f.read()
+                        except:
+                            content = None
+                    
+                    # Insert document into database
+                    if insert_document_to_db(
+                        filename=file_name,
+                        file_path=upload_file_path,
+                        file_size=file_size,
+                        file_type=file_type,
+                        content=content
+                    ):
+                        # Create doc_info dictionary
+                        doc_info = {
+                            "name": file_name,
+                            "size": f"{file_size / 1024:.1f} KB",
+                            "upload_time": upload_time,
+                            "source_path": upload_file_path
+                        }
+                        
+                        # Add to session state
+                        st.session_state.uploaded_documents.append(doc_info)
+                        st.success(f"✅ File '{file_name}' downloaded and added successfully to database!")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ Failed to add file '{file_name}' to database")
+                except Exception as e:
+                    st.error(f"Error moving file: {e}")
+            else:
+                st.error("Failed to download file from URL.")
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Display uploaded documents in sidebar
+    st.markdown('<div class="sidebar-header">📁 Uploaded Documents</div>', unsafe_allow_html=True)
+    
+    if st.session_state.uploaded_documents:
+        for i, doc_info in enumerate(st.session_state.uploaded_documents):
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                st.markdown(f"**{doc_info['name']}**")
+                st.caption(f"Size: {doc_info['size']} • Uploaded: {doc_info['upload_time']}")
+            with col2:
+                if st.button("🗑️", key=f"delete_{i}"):
+                    # Remove document from session state and delete the file
+                    doc_info = st.session_state.uploaded_documents[i]
+                    try:
+                        if os.path.exists(doc_info["source_path"]):
+                            os.remove(doc_info["source_path"])
+                        del st.session_state.uploaded_documents[i]
+                        st.success(f"✅ File '{doc_info['name']}' deleted successfully!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error deleting file: {e}")
+    else:
+        st.info("📝 No documents uploaded yet")
+    
+    st.markdown("---")
+    
+    # Display current LLM, embedding, and extraction providers
     if llm_provider == "openai":
         openai_model = st.session_state.get("openai_model", "gpt-4o-mini")
         st.info(f"💬 Chat: OpenAI ({openai_model})")
@@ -513,6 +1087,13 @@ with st.sidebar:
     elif embedding_provider == "mistral":
         st.info(f"🧬 Embeddings: Mistral (mistral-embed)")
     
+    # Display extraction provider
+    extraction_provider = st.session_state.get("extraction_provider", "docling")
+    if extraction_provider == "docling":
+        st.info(f"📄 Extraction: Docling (local)")
+    elif extraction_provider == "mistral":
+        st.info(f"📄 Extraction: Mistral OCR (cloud)")
+    
     # Add settings button to reconfigure
     if st.button("⚙️ Change LLM Provider", use_container_width=True):
         # Clear all configuration
@@ -525,56 +1106,75 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # Upload section
-    st.markdown('<div class="upload-section">', unsafe_allow_html=True)
-    st.subheader("📁 Upload Document")
-    uploaded_file = st.file_uploader(
-        "Drag & drop or click to upload",
-        type=["pdf", "docx", "xlsx", "pptx", "md", "html", "htm", "xhtml", "png", "jpg", "jpeg", "tiff", "bmp"],
-        help="Upload a document for processing (PDF, DOCX, XLSX, PPTX, Markdown, HTML, Images)",
-        label_visibility="collapsed"
-    )
-    
-    st.subheader("🔗 Or enter URL")
-    url = st.text_input(
-        "Document URL",
-        placeholder="https://example.com/document.pdf",
-        help="Enter URL to document or webpage (PDF, DOCX, HTML, etc.)",
-        label_visibility="collapsed"
-    )
-    st.markdown('</div>', unsafe_allow_html=True)
+    # File selection for extraction
+    if st.session_state.uploaded_documents:
+        file_options = [doc["name"] for doc in st.session_state.uploaded_documents]
+        selected_file = st.selectbox(
+        
+            "📄 Select file to process:",
+            options=file_options,
+            help="Choose which uploaded file you want to extract"
+        )
     
     # Processing buttons
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     
     with col1:
         extract_btn = st.button("🚀 Extract", use_container_width=True, type="primary")
     
     with col2:
+        fast_split_btn = st.button("⚡ Fast Split Only", use_container_width=True, type="primary")
+
+    with col3:
         chunk_btn = st.button("🔪 Chunk", use_container_width=True, type="secondary")
     
     embed_btn = st.button("🧬 Embed", use_container_width=True, type="secondary")
+
+    # Fast splitting only
+    if fast_split_btn:
+        if st.session_state.uploaded_documents:
+            selected_doc = next((doc for doc in st.session_state.uploaded_documents if doc["name"] == selected_file), None)
+            if selected_doc:
+                source_to_use = selected_doc["source_path"]
+                with st.status("⚡ Fast splitting file...", expanded=True) as status:
+                    st.write(f"Fast splitting {source_to_use} with fast_split_only.py")
+                    try:
+                        result = subprocess.run(
+                            [sys.executable, "fast_split_only.py", source_to_use],
+                            capture_output=True,
+                            encoding="utf-8",
+                            timeout=300  # 5 minute timeout
+                        )
+                        if result.returncode == 0:
+                            st.write("✅ Fast splitting completed successfully!")
+                            st.code(result.stdout, language="text")
+                            status.update(label="✅ Fast Splitting Complete!", state="complete")
+                            st.balloons()
+                            
+                            # Auto-refresh to show new chunk files
+                            st.rerun()
+                        else:
+                            st.error("❌ Fast splitting failed")
+                            st.code(result.stderr, language="text")
+                            status.update(label="❌ Fast Splitting Failed", state="error")
+                    except Exception as e:
+                        st.error(f"An error occurred: {e}")
+                        status.update(label="❌ Error", state="error")
+            else:
+                st.error("❌ Selected file not found")
+        else:
+            st.warning("📝 Please upload a document file first")
     
     # Process extraction
     if extract_btn:
-        if uploaded_file and url:
-            st.warning("⚠️ Please use either file upload OR URL, not both.")
-        elif uploaded_file or url:
-            # Check file size before starting extraction
-            if uploaded_file and uploaded_file.size > 50 * 1024 * 1024:
-                st.error("❌ File size too large. Maximum size is 50MB.")
-            else:
+        if st.session_state.uploaded_documents:
+            # Get the selected file path
+            selected_doc = next((doc for doc in st.session_state.uploaded_documents if doc["name"] == selected_file), None)
+            if selected_doc:
+                source_to_use = selected_doc["source_path"]
+                st.session_state["source_to_use"] = source_to_use
+                
                 with st.status("🔄 Processing extraction...", expanded=True) as status:
-                    # Handle file upload
-                    if uploaded_file:
-                        # Save uploaded file temporarily
-                        temp_file_path = f"temp_{uploaded_file.name}"
-                        with open(temp_file_path, "wb") as f:
-                            f.write(uploaded_file.getbuffer())
-                        source_to_use = temp_file_path
-                    else:
-                        source_to_use = url
-                    
                     # Update the extraction source
                     st.write("📝 Updating extraction script...")
                     if update_extraction_source(source_to_use):
@@ -582,18 +1182,18 @@ with st.sidebar:
                         
                         # Run the extraction process
                         st.write("🔍 Extracting document content...")
-                        success, output = run_extraction()
-                        
-                        # Clean up temporary file if uploaded
-                        if uploaded_file and os.path.exists(temp_file_path):
-                            os.remove(temp_file_path)
+                        success, output = run_extraction(source_to_use)
                         
                         if success:
                             st.write("✅ Extraction completed successfully!")
                             st.code(output, language="text")
                             status.update(label="✅ Extraction Complete!", state="complete")
+                            st.session_state["extraction_successful"] = True
                             st.balloons()
                             st.success("Document ready for questions! 🎉")
+                            
+                            # Auto-refresh to show updated state
+                            st.rerun()
                         else:
                             st.error("❌ Extraction failed")
                             st.code(output, language="text")
@@ -601,20 +1201,27 @@ with st.sidebar:
                     else:
                         st.error("Failed to update extraction script")
                         status.update(label="❌ Update Failed", state="error")
+            else:
+                st.error("❌ Selected file not found")
         else:
-            st.warning("📝 Please upload a document file or enter a URL first")
+            st.warning("📝 Please upload a document file first")
     
     # Process chunking
     if chunk_btn:
         with st.status("🔄 Processing chunking...", expanded=True) as status:
             st.write("🔪 Chunking document content...")
             success, output = run_chunking()
+            st.session_state["chunking_successful"] = False
             
             if success:
                 st.write("✅ Chunking completed successfully!")
                 st.code(output, language="text")
                 status.update(label="✅ Chunking Complete!", state="complete")
+                st.session_state["chunking_successful"] = True
                 st.success("Document chunked successfully! 🎯")
+                
+                # Auto-refresh to show updated state
+                st.rerun()
             else:
                 st.error("❌ Chunking failed")
                 st.code(output, language="text")
@@ -631,100 +1238,261 @@ with st.sidebar:
                 st.code(output, language="text")
                 status.update(label="✅ Embedding Complete!", state="complete")
                 st.success("Embeddings created successfully! 🎯")
+                
+                # Auto-refresh to show updated state
+                st.rerun()
             else:
                 st.error("❌ Embedding failed")
                 st.code(output, language="text")
                 status.update(label="❌ Embedding Failed", state="error")
+    
+    
+    # Initialize session state for chat history
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
-# Main content area for chat
-st.markdown('<div class="main-header">📚 Document Q&A Assistant</div>', unsafe_allow_html=True)
+# Create tabs for different functionalities
+tab1, tab2 = st.tabs(["💬 Chat", "🗃️ Database Management"])
 
-# Initialize session state for chat history
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+with tab1:
+    # Main content area for chat
+    st.markdown('<div class="main-header">📚 Document Q&A Assistant</div>', unsafe_allow_html=True)
+    
 
-# Display chat messages in centered container
-st.markdown('<div class="chat-container">', unsafe_allow_html=True)
-
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-# Chat input
-if prompt := st.chat_input("💬 Ask a question about the document..."):
-    # Display user message
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    # Add user message to chat history
-    st.session_state.messages.append({"role": "user", "content": prompt})
-
-    # Get relevant context
-    with st.status("🔍 Searching document...", expanded=False) as status:
-        context = get_context(prompt)
-        st.markdown(
-            """
-            <style>
-            .search-result {
-                margin: 10px 0;
-                padding: 15px;
-                border-radius: 8px;
-                background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
-                border-left: 4px solid #3498db;
-            }
-            .search-result summary {
-                cursor: pointer;
-                color: #2c3e50;
-                font-weight: 600;
-                font-size: 1.1em;
-            }
-            .search-result summary:hover {
-                color: #1a73e8;
-            }
-            .metadata {
-                font-size: 0.9em;
-                color: #6c757d;
-                font-style: italic;
-                margin-bottom: 8px;
-            }
-            </style>
-        """,
-            unsafe_allow_html=True,
-        )
-
-        st.write("📋 Found relevant sections:")
-        for chunk in context.split("\n\n"):
-            # Split into text and metadata parts
-            parts = chunk.split("\n")
-            text = parts[0]
-            metadata = {
-                line.split(": ")[0]: line.split(": ")[1]
-                for line in parts[1:]
-                if ": " in line
-            }
-
-            source = metadata.get("Source", "Unknown source")
-            title = metadata.get("Title", "Untitled section")
-
-            st.markdown(
-                f"""
-                <div class="search-result">
-                    <details>
-                        <summary>{source}</summary>
-                        <div class="metadata">📖 Section: {title}</div>
-                        <div style="margin-top: 12px; line-height: 1.6;">{text}</div>
-                    </details>
+    
+    # Messages area with scrolling
+    st.markdown('<div class="chat-messages">', unsafe_allow_html=True)
+    
+    # Display all chat messages inside the container using custom styling
+    if st.session_state.messages:
+        for message in st.session_state.messages:
+            if message["role"] == "user":
+                st.markdown(f"""
+                <div style="background: linear-gradient(145deg, #e3f2fd, #bbdefb);
+                            border-left: 4px solid #2196f3;
+                            border-radius: 15px;
+                            padding: 1rem;
+                            margin: 0.5rem 0;
+                            box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                    <strong>👤 You:</strong><br>
+                    {message["content"]}
                 </div>
-            """,
-                unsafe_allow_html=True,
-            )
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown(f"""
+                <div style="background: linear-gradient(145deg, #f3e5f5, #e1bee7);
+                            border-left: 4px solid #9c27b0;
+                            border-radius: 15px;
+                            padding: 1rem;
+                            margin: 0.5rem 0;
+                            box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                    <strong>🤖 Assistant:</strong><br>
+                    {message["content"]}
+                </div>
+                """, unsafe_allow_html=True)
+    else:
+        # Show empty state when no messages
+        st.markdown("""
+        <div style="text-align: center; padding: 3rem; color: #6c757d;">
+            <h3>💬 Start a conversation</h3>
+            <p>Ask questions about your documents using the chat input below.</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown('</div>', unsafe_allow_html=True)  # Close chat-messages div
+    st.markdown('</div>', unsafe_allow_html=True)  # Close chat-container div
+    
+    # Chat input at the bottom (outside the container but properly positioned)
+    if prompt := st.chat_input("💬 Ask a question about the document..."):
+        # Add user message to chat history first
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        
+        # Get relevant context using embeddings
+        with st.status("🔍 Searching embeddings...", expanded=False) as status:
+            # For embeddings, we don't need the source file - use empty string
+            context = get_context(prompt, "")
 
-    # Display assistant response first
-    with st.chat_message("assistant"):
-        # Get model response with streaming
+        # Add assistant response to chat history
         response = get_chat_response(st.session_state.messages, context)
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        
+        # Rerun to update the chat display
+        st.rerun()
 
-    # Add assistant response to chat history
-    st.session_state.messages.append({"role": "assistant", "content": response})
-
-st.markdown('</div>', unsafe_allow_html=True)
+with tab2:
+    st.markdown('<div class="main-header">🗃️ Database Management</div>', unsafe_allow_html=True)
+    
+    # Create subtabs for documents, chunks, and embeddings
+    subtab1, subtab2, subtab3 = st.tabs(["📄 Documents", "🔪 Chunks", "🧬 Embeddings"])
+    
+    with subtab1:
+        st.subheader("📄 Manage Documents")
+        st.markdown("View and manage documents stored in the database")
+        
+        if st.button("🔄 Refresh Documents List", key="refresh_docs"):
+            st.rerun()
+        
+        documents = get_documents_from_db()
+        
+        if documents:
+            st.success(f"✅ Found {len(documents)} documents in database")
+            
+            for doc in documents:
+                with st.expander(f"📄 {doc['filename']} ({doc['file_type']})", expanded=False):
+                    col1, col2, col3 = st.columns([3, 1, 1])
+                    
+                    with col1:
+                        st.write(f"**File Path:** {doc['file_path']}")
+                        st.write(f"**Size:** {doc['file_size']} bytes")
+                        st.write(f"**Uploaded:** {doc['upload_date']}")
+                        st.write(f"**Processed:** {'✅' if doc['processed'] else '❌'}")
+                        if doc['processing_date']:
+                            st.write(f"**Processing Date:** {doc['processing_date']}")
+                    
+                    with col2:
+                        if st.button("🗑️ Delete", key=f"delete_doc_{doc['id']}"):
+                            if delete_document_from_db(doc['id']):
+                                st.success(f"✅ Document '{doc['filename']}' deleted successfully!")
+                                st.rerun()
+                            else:
+                                st.error(f"❌ Failed to delete document '{doc['filename']}'")
+                    
+                    with col3:
+                        if st.button("📊 View Details", key=f"view_doc_{doc['id']}"):
+                            # Count related chunks
+                            conn = get_db_connection()
+                            if conn:
+                                try:
+                                    with conn.cursor() as cur:
+                                        cur.execute("SELECT COUNT(*) FROM document_chunks WHERE document_id = %s", (doc['id'],))
+                                        chunk_count = cur.fetchone()[0]
+                                        cur.execute("SELECT COUNT(*) FROM embeddings WHERE chunk_id IN (SELECT id FROM document_chunks WHERE document_id = %s)", (doc['id'],))
+                                        embedding_count = cur.fetchone()[0]
+                                        st.info(f"**Related Data:** {chunk_count} chunks, {embedding_count} embeddings")
+                                except Exception as e:
+                                    st.error(f"Error counting related data: {e}")
+                                finally:
+                                    conn.close()
+        else:
+            st.info("📝 No documents found in the database")
+    
+    with subtab2:
+        st.subheader("🔪 Manage Chunks")
+        st.markdown("View and manage document chunks stored in the database")
+        
+        if st.button("🔄 Refresh Chunks List", key="refresh_chunks"):
+            st.rerun()
+        
+        chunks = get_chunks_from_db()
+        
+        if chunks:
+            st.success(f"✅ Found {len(chunks)} chunks in database")
+            
+            # Group chunks by filename for better organization
+            chunks_by_file = {}
+            for chunk in chunks:
+                filename = chunk['filename']
+                if filename not in chunks_by_file:
+                    chunks_by_file[filename] = []
+                chunks_by_file[filename].append(chunk)
+            
+            for filename, file_chunks in chunks_by_file.items():
+                with st.expander(f"📄 {filename} ({len(file_chunks)} chunks)", expanded=False):
+                    for chunk in file_chunks:
+                        col1, col2, col3 = st.columns([3, 1, 1])
+                        
+                        with col1:
+                            st.write(f"**Chunk #{chunk['chunk_index']}**")
+                            if chunk['section_title']:
+                                st.write(f"**Section:** {chunk['section_title']}")
+                            if chunk['page_numbers']:
+                                st.write(f"**Pages:** {chunk['page_numbers']}")
+                            st.write(f"**Type:** {chunk['chunk_type']}")
+                            st.write(f"**Tokens:** {chunk['token_count']}")
+                            st.write(f"**Created:** {chunk['created_at']}")
+                            
+                            # Show preview of chunk text
+                            preview_text = chunk['chunk_text'][:200] + "..." if len(chunk['chunk_text']) > 200 else chunk['chunk_text']
+                            if st.button("👁️ Preview Text", key=f"preview_{chunk['id']}"):
+                                st.text_area("Preview Content", preview_text, height=100, disabled=True)
+                        
+                        with col2:
+                            if st.button("🗑️ Delete", key=f"delete_chunk_{chunk['id']}"):
+                                if delete_chunk_from_db(chunk['id']):
+                                    st.success(f"✅ Chunk #{chunk['chunk_index']} deleted successfully!")
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ Failed to delete chunk #{chunk['chunk_index']}")
+                        
+                        with col3:
+                            if st.button("📊 View Details", key=f"view_chunk_{chunk['id']}"):
+                                # Count related embeddings
+                                conn = get_db_connection()
+                                if conn:
+                                    try:
+                                        with conn.cursor() as cur:
+                                            cur.execute("SELECT COUNT(*) FROM embeddings WHERE chunk_id = %s", (chunk['id'],))
+                                            embedding_count = cur.fetchone()[0]
+                                            st.info(f"**Related Embeddings:** {embedding_count}")
+                                    except Exception as e:
+                                        st.error(f"Error counting embeddings: {e}")
+                                    finally:
+                                        conn.close()
+                        
+                        st.markdown("---")
+        else:
+            st.info("🔪 No chunks found in the database")
+    
+    with subtab3:
+        st.subheader("🧬 Manage Embeddings")
+        st.markdown("View and manage embeddings stored in the database")
+        
+        if st.button("🔄 Refresh Embeddings List", key="refresh_embeddings"):
+            st.rerun()
+        
+        embeddings = get_embeddings_from_db()
+        
+        if embeddings:
+            st.success(f"✅ Found {len(embeddings)} embeddings in database")
+            
+            # Group embeddings by provider for better organization
+            embeddings_by_provider = {}
+            for embedding in embeddings:
+                provider = embedding['embedding_provider']
+                if provider not in embeddings_by_provider:
+                    embeddings_by_provider[provider] = []
+                embeddings_by_provider[provider].append(embedding)
+            
+            for provider, provider_embeddings in embeddings_by_provider.items():
+                with st.expander(f"🧬 {provider.upper()} Embeddings ({len(provider_embeddings)} entries)", expanded=False):
+                    for embedding in provider_embeddings:
+                        col1, col2, col3 = st.columns([3, 1, 1])
+                        
+                        with col1:
+                            st.write(f"**Filename:** {embedding['filename']}")
+                            if embedding['original_filename']:
+                                st.write(f"**Original:** {embedding['original_filename']}")
+                            if embedding['title']:
+                                st.write(f"**Title:** {embedding['title']}")
+                            if embedding['page_numbers']:
+                                st.write(f"**Pages:** {embedding['page_numbers']}")
+                            st.write(f"**Model:** {embedding['embedding_model']}")
+                            st.write(f"**Created:** {embedding['created_at']}")
+                        
+                        with col2:
+                            if st.button("🗑️ Delete", key=f"delete_embedding_{embedding['id']}"):
+                                if delete_embedding_from_db(embedding['id']):
+                                    st.success(f"✅ Embedding deleted successfully!")
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ Failed to delete embedding")
+                        
+                        with col3:
+                            if st.button("📊 View Details", key=f"view_embedding_{embedding['id']}"):
+                                st.info(f"**Embedding ID:** {embedding['id']}")
+                                st.info(f"**Provider:** {embedding['embedding_provider']}")
+                                st.info(f"**Model:** {embedding['embedding_model']}")
+                        
+                        st.markdown("---")
+        else:
+            st.info("🧬 No embeddings found in the database")
