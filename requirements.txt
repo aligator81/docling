@@ -1,16 +1,45 @@
-requests
-ipykernel
-python-dotenv
-openai
-mistralai
-pydantic
-docling
-streamlit
-tiktoken
-scikit-learn
-pymupdf
-pillow
-pytesseract
-psutil
-numpy
-psycopg2-binary
+# Optimized requirements for faster Coolify deployment
+# Removed heavy ML dependencies that cause long build times
+
+# Core web framework
+streamlit==1.28.0
+
+# API clients
+openai==1.3.0
+mistralai==0.1.2
+
+# Environment and HTTP
+python-dotenv==1.0.0
+requests==2.31.0
+
+# Data processing
+numpy==1.24.0
+scikit-learn==1.3.0
+pandas==2.0.3
+
+# Document processing
+pymupdf==1.23.0
+pillow==10.0.0
+docling==1.2.0
+
+# Database
+psycopg2-binary==2.9.7
+
+# Text processing
+tiktoken==0.5.0
+
+# Utilities
+python-dateutil==2.8.2
+beautifulsoup4==4.12.2
+lxml==4.9.3
+
+# Remove these heavy dependencies for faster deployment:
+# torch==2.0.1          # ~2GB - too heavy for deployment
+# torchvision==0.15.2   # ~1GB - remove if not essential
+# transformers==4.30.0  # ~1GB - remove if not using advanced NLP
+# opencv-python-headless==4.8.0  # ~200MB - remove if not processing images
+# CUDA libraries        # Remove if not using GPU
+
+# Alternative lighter dependencies if needed:
+# Use cpu-only versions if ML is required:
+# torch --index-url https://download.pytorch.org/whl/cpu
