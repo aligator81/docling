@@ -33,11 +33,11 @@ python-dateutil==2.8.2
 beautifulsoup4==4.12.3
 lxml==4.9.3
 
-# Remove these heavy dependencies for faster deployment:
-# torch==2.0.1          # ~2GB - too heavy for deployment
-# torchvision==0.15.2   # ~1GB - remove if not essential
-# transformers==4.30.0  # ~1GB - remove if not using advanced NLP
-# opencv-python-headless==4.8.0  # ~200MB - remove if not processing images
+# Remove heavy dependencies - causing disk space issues on Coolify:
+torch==2.0.1          # ~2GB - comment out if not essential
+torchvision==0.15.2   # ~1GB - comment out if not essential
+transformers==4.30.0  # ~1GB - comment out if not using advanced NLP
+opencv-python-headless==4.8.0  # ~200MB - comment out if not processing images
 # CUDA libraries        # Remove if not using GPU
 
 # Alternative lighter dependencies if needed:

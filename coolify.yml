@@ -9,7 +9,7 @@ build:
 deploy:
   replicas: 1
   resources:
-    memory: 2G
+    memory: 1G
     cpu: 1
   healthcheck:
     path: /_stcore/health
