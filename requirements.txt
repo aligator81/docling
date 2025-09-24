@@ -10,7 +10,7 @@ mistralai==0.1.2
 
 # Environment and HTTP
 python-dotenv==1.0.0
-requests==2.31.0
+requests==2.32.3
 
 # Data processing - optimized for Python 3.11
 numpy==1.26.4
