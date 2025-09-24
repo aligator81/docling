@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = ["python311", "gcc"]
+
+[phases.install]
+cmds = ["python -m venv --copies /opt/venv", ". /opt/venv/bin/activate && pip install --no-cache-dir --only-binary=all -r requirements.txt"]
+
+[start]
+cmd = "cd /app && . /opt/venv/bin/activate && streamlit run 5-chat.py --server.port=8501 --server.address=0.0.0.0"
