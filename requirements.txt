@@ -20,7 +20,7 @@ pandas==2.2.3
 # Document processing - compatible with Python 3.11
 pymupdf==1.24.14
 pillow==10.0.0
-docling==2.1.2
+docling==2.54.0
 
 # Database
 psycopg2-binary==2.9.7
