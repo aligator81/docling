@@ -3,9 +3,8 @@ name: docling-app
 description: "Document Q&A Assistant with Streamlit interface"
 
 build:
-  dockerfile: Dockerfile
+  dockerfile: Dockerfile.coolify
   context: .
-  target: builder
 
 deploy:
   replicas: 1
