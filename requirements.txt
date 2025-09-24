@@ -30,7 +30,7 @@ tiktoken==0.5.0
 
 # Utilities
 python-dateutil==2.8.2
-beautifulsoup4==4.12.2
+beautifulsoup4==4.12.3
 lxml==4.9.3
 
 # Remove these heavy dependencies for faster deployment:
