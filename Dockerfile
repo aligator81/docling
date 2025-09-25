@@ -1,20 +1,23 @@
-# Alternative simple Dockerfile for Coolify compatibility
+# Optimized Dockerfile for Coolify compatibility with cmake support
 FROM python:3.11-slim
 
 # Set working directory
 WORKDIR /app
 
-# Install minimal system dependencies
+# Install system dependencies including cmake for pyarrow compilation
 RUN apt-get update && apt-get install -y \
     curl \
     git \
+    cmake \
+    build-essential \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install Python dependencies with minimal build requirements
-RUN pip install --no-cache-dir --only-binary=all -r requirements.txt
+# Install Python dependencies - allow binary packages where possible
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY . .
