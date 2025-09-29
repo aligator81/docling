@@ -7,16 +7,18 @@ build:
   context: .
 
 deploy:
-  replicas: 1
-  resources:
-    memory: 1G
-    cpu: 1
-  healthcheck:
-    path: /_stcore/health
-    port: 8501
-    initial_delay: 60
-    timeout: 30
-    period: 60
+   replicas: 1
+   resources:
+     memory: 1G
+     cpu: 1
+   healthcheck:
+     path: /_stcore/health
+     port: 8501
+     initial_delay: 60
+     timeout: 30
+     period: 60
+   restart_policy: always
+   network_mode: bridge
 
 environment:
   - OPENAI_API_KEY=${OPENAI_API_KEY}
@@ -27,7 +29,7 @@ environment:
   - PYTHONUNBUFFERED=1
 
 ports:
-  - 8501
+   - "8501:8501"
 
 volumes:
   - type: directory
