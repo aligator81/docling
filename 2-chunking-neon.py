@@ -11,6 +11,14 @@ import tempfile
 
 load_dotenv()
 
+# Neon database connection - loaded from environment variables
+NEON_CONNECTION_STRING = os.getenv("NEON_CONNECTION_STRING")
+
+# Validate required environment variables
+if not NEON_CONNECTION_STRING:
+    print("NEON_CONNECTION_STRING environment variable is required but not set!")
+    exit(1)
+
 # Set up Unicode encoding for Windows console
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding='utf-8')
@@ -19,8 +27,8 @@ if sys.platform == "win32":
 # Suppress the specific transformers warning
 warnings.filterwarnings("ignore", message=".*clean_up_tokenization_spaces.*", category=FutureWarning)
 
-# Neon database connection
-NEON_CONNECTION_STRING = "postgresql://neondb_owner:npg_N7vynH6dQCer@ep-gentle-moon-aeeiaefq-pooler.c-2.us-east-2.aws.neon.tech/neondb?channel_binding=require&sslmode=require"
+# Neon database connection - loaded from environment variables
+NEON_CONNECTION_STRING = os.getenv("NEON_CONNECTION_STRING")
 
 def get_db_connection():
     """Get connection to Neon database"""

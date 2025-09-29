@@ -45,14 +45,22 @@ import fitz
 # Load environment variables
 load_dotenv()
 
+# Configuration - loaded from environment variables
+NEON_CONNECTION_STRING = os.getenv("NEON_CONNECTION_STRING")
+
+# Validate required environment variables
+if not NEON_CONNECTION_STRING:
+    print("NEON_CONNECTION_STRING environment variable is required but not set!")
+    sys.exit(1)
+
 # Fix Unicode encoding issues on Windows
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stderr.reconfigure(encoding='utf-8')
 warnings.filterwarnings("ignore", message=".*clean_up_tokenization_spaces.*")
 
-# Configuration
-NEON_CONNECTION_STRING = "postgresql://neondb_owner:npg_N7vynH6dQCer@ep-gentle-moon-aeeiaefq-pooler.c-2.us-east-2.aws.neon.tech/neondb?channel_binding=require&sslmode=require"
+# Configuration - loaded from environment variables
+NEON_CONNECTION_STRING = os.getenv("NEON_CONNECTION_STRING")
 
 @dataclass
 class PerformanceMetrics:

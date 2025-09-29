@@ -28,6 +28,14 @@ args = parser.parse_args()
 # Load environment variables as fallback
 load_dotenv()
 
+# Neon database connection - loaded from environment variables
+NEON_CONNECTION_STRING = os.getenv("NEON_CONNECTION_STRING")
+
+# Validate required environment variables
+if not NEON_CONNECTION_STRING:
+    print("NEON_CONNECTION_STRING environment variable is required but not set!")
+    exit(1)
+
 # Set up Unicode encoding for Windows console and suppress warnings
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding='utf-8')
@@ -70,8 +78,8 @@ MAX_TOKENS = 8191  # text-embedding-3-large's maximum context length
 # Initialize DocumentConverter
 converter = DocumentConverter()
 
-# Neon database connection
-NEON_CONNECTION_STRING = "postgresql://neondb_owner:npg_N7vynH6dQCer@ep-gentle-moon-aeeiaefq-pooler.c-2.us-east-2.aws.neon.tech/neondb?channel_binding=require&sslmode=require"
+# Neon database connection - loaded from environment variables
+NEON_CONNECTION_STRING = os.getenv("NEON_CONNECTION_STRING")
 
 def get_db_connection():
     """Get connection to Neon database"""

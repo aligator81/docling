@@ -43,6 +43,7 @@ cache/*
 !cache/.gitkeep
 
 # Environment files
+.env
 .env.local
 .env.production
 .env.staging

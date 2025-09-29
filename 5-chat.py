@@ -18,6 +18,14 @@ from psycopg2.extras import Json
 # Load environment variables
 load_dotenv()
 
+# Neon database connection - loaded from environment variables
+NEON_CONNECTION_STRING = os.getenv("NEON_CONNECTION_STRING")
+
+# Validate required environment variables
+if not NEON_CONNECTION_STRING:
+    st.error("❌ NEON_CONNECTION_STRING environment variable is required but not set!")
+    st.stop()
+
 # Initialize session state for API keys and settings
 if "api_keys_configured" not in st.session_state:
     st.session_state.api_keys_configured = False
@@ -205,8 +213,8 @@ llm_provider = st.session_state.llm_provider
 embedding_provider = st.session_state.get("embedding_provider", "openai")
 extraction_provider = st.session_state.get("extraction_provider", "docling")
 
-# Neon database connection
-NEON_CONNECTION_STRING = "postgresql://neondb_owner:npg_N7vynH6dQCer@ep-gentle-moon-aeeiaefq-pooler.c-2.us-east-2.aws.neon.tech/neondb?channel_binding=require&sslmode=require"
+# Neon database connection - loaded from environment variables
+NEON_CONNECTION_STRING = os.getenv("NEON_CONNECTION_STRING")
 
 def get_db_connection():
     """Get connection to Neon database"""
