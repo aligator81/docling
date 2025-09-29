@@ -24,6 +24,8 @@ NEON_CONNECTION_STRING = os.getenv("NEON_CONNECTION_STRING")
 # Validate required environment variables
 if not NEON_CONNECTION_STRING:
     st.error("❌ NEON_CONNECTION_STRING environment variable is required but not set!")
+    st.error("Please set NEON_CONNECTION_STRING in your Coolify environment variables.")
+    st.error("Example: postgresql://username:password@host/database")
     st.stop()
 
 # Initialize session state for API keys and settings
@@ -212,9 +214,6 @@ mistral_client = st.session_state.mistral_client
 llm_provider = st.session_state.llm_provider
 embedding_provider = st.session_state.get("embedding_provider", "openai")
 extraction_provider = st.session_state.get("extraction_provider", "docling")
-
-# Neon database connection - loaded from environment variables
-NEON_CONNECTION_STRING = os.getenv("NEON_CONNECTION_STRING")
 
 def get_db_connection():
     """Get connection to Neon database"""
