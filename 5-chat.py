@@ -26,6 +26,7 @@ if not NEON_CONNECTION_STRING:
     st.error("❌ NEON_CONNECTION_STRING environment variable is required but not set!")
     st.error("Please set NEON_CONNECTION_STRING in your Coolify environment variables.")
     st.error("Example: postgresql://username:password@host/database")
+    st.error(f"Current value: {os.getenv('NEON_CONNECTION_STRING', 'NOT SET')}")
     st.stop()
 
 # Initialize session state for API keys and settings
