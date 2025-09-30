@@ -5,6 +5,7 @@ import subprocess
 import os
 import re
 import sys
+import time
 from datetime import datetime
 from openai import OpenAI
 from mistralai import Mistral
@@ -218,9 +219,13 @@ def get_db_connection():
     """Get connection to Neon database"""
     try:
         conn = psycopg2.connect(NEON_CONNECTION_STRING)
+        # Test the connection
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
         return conn
     except Exception as e:
-        st.error(f"Error connecting to database: {e}")
+        st.error(f"❌ Database connection failed: {e}")
+        st.error(f"Connection string: {NEON_CONNECTION_STRING[:50]}...")
         return None
 
 def search_embeddings_neon(query, top_k=3):
@@ -293,8 +298,9 @@ def get_documents_from_db():
     """Get all documents from the database"""
     conn = get_db_connection()
     if not conn:
+        st.error("❌ Cannot connect to database to fetch documents")
         return []
-    
+
     try:
         with conn.cursor() as cur:
             cur.execute("""
@@ -315,12 +321,194 @@ def get_documents_from_db():
                     "processing_date": row[7]
                 }
                 documents.append(doc)
+
+            st.info(f"📊 Found {len(documents)} documents in database")
             return documents
     except Exception as e:
-        st.error(f"Error fetching documents: {e}")
+        st.error(f"❌ Error fetching documents: {e}")
         return []
     finally:
         conn.close()
+
+def verify_database_integrity():
+    """Verify that all local files exist in database and vice versa"""
+    issues = []
+
+    # Check local files vs database
+    if os.path.exists("data/uploads"):
+        local_files = set()
+        for filename in os.listdir("data/uploads"):
+            filepath = os.path.join("data/uploads", filename)
+            if os.path.isfile(filepath):
+                local_files.add(filename)
+
+        # Get database files
+        db_files = set(doc["filename"] for doc in get_documents_from_db())
+
+        # Find discrepancies
+        in_local_not_db = local_files - db_files
+        in_db_not_local = db_files - local_files
+
+        if in_local_not_db:
+            issues.append(f"⚠️ {len(in_local_not_db)} files in local folder but not in database: {list(in_local_not_db)[:3]}...")
+
+        if in_db_not_local:
+            issues.append(f"⚠️ {len(in_db_not_local)} files in database but not in local folder: {list(in_db_not_local)[:3]}...")
+
+    return issues
+
+def debug_database_content():
+    """Debug function to show detailed database content"""
+    conn = get_db_connection()
+    if not conn:
+        return "❌ Cannot connect to database"
+
+    try:
+        with conn.cursor() as cur:
+            # Check if tables exist
+            cur.execute("""
+                SELECT table_name FROM information_schema.tables
+                WHERE table_schema = 'public'
+                AND table_name IN ('documents', 'document_chunks', 'embeddings')
+            """)
+            existing_tables = [row[0] for row in cur.fetchall()]
+
+            debug_info = "📊 **Database Tables Status:**\n"
+            for table in ['documents', 'document_chunks', 'embeddings']:
+                if table in existing_tables:
+                    cur.execute(f"SELECT COUNT(*) FROM {table}")
+                    count = cur.fetchone()[0]
+                    debug_info += f"  ✅ {table}: {count} records\n"
+                else:
+                    debug_info += f"  ❌ {table}: table does not exist\n"
+
+            # Get document details
+            if 'documents' in existing_tables:
+                cur.execute("SELECT COUNT(*) FROM documents")
+                doc_count = cur.fetchone()[0]
+
+                debug_info += f"\n📄 **Documents Details ({doc_count} total):**\n"
+                cur.execute("""
+                    SELECT id, filename, file_size, file_type, processed, upload_date
+                    FROM documents
+                    ORDER BY upload_date DESC
+                """)
+                docs = cur.fetchall()
+                for doc in docs:
+                    doc_id, filename, file_size, file_type, processed, upload_date = doc
+                    status = "✅ Processed" if processed else "⏳ Unprocessed"
+                    debug_info += f"  • [{doc_id}] {filename} ({file_size} bytes, {file_type}) - {status}\n"
+
+            # Get chunk details
+            if 'document_chunks' in existing_tables:
+                cur.execute("SELECT COUNT(*) FROM document_chunks")
+                chunk_count = cur.fetchone()[0]
+
+                debug_info += f"\n🔪 **Chunks Details ({chunk_count} total):**\n"
+                cur.execute("""
+                    SELECT dc.id, d.filename, dc.chunk_index, LENGTH(dc.chunk_text) as text_length, dc.token_count
+                    FROM document_chunks dc
+                    JOIN documents d ON dc.document_id = d.id
+                    ORDER BY dc.created_at DESC
+                    LIMIT 10
+                """)
+                chunks = cur.fetchall()
+                for chunk in chunks:
+                    chunk_id, filename, chunk_index, text_length, token_count = chunk
+                    debug_info += f"  • [{chunk_id}] {filename} Chunk {chunk_index} ({text_length} chars, {token_count} tokens)\n"
+
+            # Get embedding details
+            if 'embeddings' in existing_tables:
+                cur.execute("SELECT COUNT(*) FROM embeddings")
+                embedding_count = cur.fetchone()[0]
+
+                debug_info += f"\n🧬 **Embeddings Details ({embedding_count} total):**\n"
+                cur.execute("""
+                    SELECT e.id, d.filename, e.embedding_provider, e.embedding_model, e.created_at
+                    FROM embeddings e
+                    JOIN document_chunks dc ON e.chunk_id = dc.id
+                    JOIN documents d ON dc.document_id = d.id
+                    ORDER BY e.created_at DESC
+                    LIMIT 10
+                """)
+                embeddings = cur.fetchall()
+
+                # Group by provider
+                provider_counts = {}
+                for emb in embeddings:
+                    emb_id, filename, provider, model, created_at = emb
+                    if provider not in provider_counts:
+                        provider_counts[provider] = 0
+                    provider_counts[provider] += 1
+
+                debug_info += "📊 **Embeddings by Provider:**\n"
+                for provider, count in provider_counts.items():
+                    debug_info += f"  • {provider}: {count} embeddings\n"
+
+                debug_info += "\n🧬 **Recent Embeddings:**\n"
+                for emb in embeddings[:5]:  # Show first 5
+                    emb_id, filename, provider, model, created_at = emb
+                    debug_info += f"  • [{emb_id}] {filename} - {provider} ({model})\n"
+
+            return debug_info
+    except Exception as e:
+        return f"❌ Error debugging database: {e}"
+    finally:
+        conn.close()
+
+def reset_document_for_reprocessing(document_id):
+    """Reset a document's processed status and delete its chunks/embeddings"""
+    conn = get_db_connection()
+    if not conn:
+        return False
+
+    try:
+        with conn.cursor() as cur:
+            # Delete related embeddings first
+            cur.execute("DELETE FROM embeddings WHERE chunk_id IN (SELECT id FROM document_chunks WHERE document_id = %s)", (document_id,))
+            # Delete related chunks
+            cur.execute("DELETE FROM document_chunks WHERE document_id = %s", (document_id,))
+            # Reset document processed status
+            cur.execute("""
+                UPDATE documents
+                SET processed = FALSE, processing_date = NULL
+                WHERE id = %s
+            """, (document_id,))
+            conn.commit()
+            return True
+    except Exception as e:
+        st.error(f"Error resetting document: {e}")
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+def sync_local_files_to_database():
+    """Sync local files to database"""
+    synced_count = 0
+    if os.path.exists("data/uploads"):
+        for filename in os.listdir("data/uploads"):
+            filepath = os.path.join("data/uploads", filename)
+            if os.path.isfile(filepath):
+                # Check if file is already in database
+                documents = get_documents_from_db()
+                if not any(doc["filename"] == filename for doc in documents):
+                    # Add file to database
+                    file_size = os.path.getsize(filepath)
+                    file_type = filename.split('.')[-1].lower()
+
+                    content = None
+                    if file_type in ['txt', 'md', 'html']:
+                        try:
+                            with open(filepath, 'r', encoding='utf-8') as f:
+                                content = f.read()
+                        except:
+                            content = None
+
+                    if insert_document_to_db(filename, filepath, file_size, file_type, content):
+                        synced_count += 1
+
+    return synced_count
 
 def get_chunks_from_db():
     """Get all chunks from the database"""
@@ -461,33 +649,44 @@ def insert_document_to_db(filename, file_path, file_size, file_type, content=Non
     """Insert a document into the database"""
     conn = get_db_connection()
     if not conn:
+        st.error("❌ Cannot connect to database for document insertion")
         return False
-    
+
     try:
         with conn.cursor() as cur:
             # Check if document already exists
-            cur.execute("SELECT id FROM documents WHERE filename = %s", (filename,))
+            cur.execute("SELECT id, processed FROM documents WHERE filename = %s", (filename,))
             existing = cur.fetchone()
-            
+
             if not existing:
                 # Insert new document
+                st.info(f"📄 Inserting new document: {filename}")
                 cur.execute("""
                     INSERT INTO documents (filename, file_path, file_size, file_type, content, processed)
                     VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING id
                 """, (filename, file_path, file_size, file_type, content, False))
+                doc_id = cur.fetchone()[0]
                 conn.commit()
+                st.success(f"✅ Document '{filename}' inserted successfully (ID: {doc_id})")
                 return True
             else:
+                doc_id, was_processed = existing
                 # Document already exists, update the record
+                st.info(f"📄 Updating existing document: {filename}")
                 cur.execute("""
                     UPDATE documents
                     SET file_path = %s, file_size = %s, file_type = %s, content = %s, processed = %s
                     WHERE filename = %s
+                    RETURNING id
                 """, (file_path, file_size, file_type, content, False, filename))
+                updated_id = cur.fetchone()[0]
                 conn.commit()
+                st.success(f"✅ Document '{filename}' updated successfully (ID: {updated_id})")
                 return True
     except Exception as e:
-        st.error(f"Error inserting document into database: {e}")
+        st.error(f"❌ Error inserting document into database: {e}")
+        st.error(f"File details - Name: {filename}, Path: {file_path}, Size: {file_size}, Type: {file_type}")
         conn.rollback()
         return False
     finally:
@@ -500,11 +699,20 @@ def add_uploaded_document(uploaded_file):
         data_dir = "data/uploads"
         os.makedirs(data_dir, exist_ok=True)
         upload_file_path = f"{data_dir}/{uploaded_file.name}"
-        
+
         try:
+            st.info(f"💾 Saving file to: {upload_file_path}")
             with open(upload_file_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
-            
+
+            # Verify file was saved
+            if not os.path.exists(upload_file_path):
+                st.error(f"❌ Failed to save file: {upload_file_path}")
+                return
+
+            file_size = os.path.getsize(upload_file_path)
+            st.success(f"✅ File saved successfully ({file_size} bytes)")
+
             # Read file content for text files
             content = None
             file_type = uploaded_file.name.split('.')[-1].lower()
@@ -512,30 +720,42 @@ def add_uploaded_document(uploaded_file):
                 try:
                     with open(upload_file_path, 'r', encoding='utf-8') as f:
                         content = f.read()
-                except:
+                    st.info(f"📄 Read {len(content)} characters of content")
+                except Exception as e:
+                    st.warning(f"⚠️ Could not read file content: {e}")
                     content = None
-            
+
             # Insert document into database
+            st.info("💾 Saving to database...")
             if insert_document_to_db(
                 filename=uploaded_file.name,
                 file_path=upload_file_path,
-                file_size=uploaded_file.size,
+                file_size=file_size,
                 file_type=file_type,
                 content=content
             ):
-                doc_info = {
-                    "name": uploaded_file.name,
-                    "size": f"{uploaded_file.size / 1024:.1f} KB",
-                    "upload_time": datetime.now().strftime("%H:%M:%S"),
-                    "source_path": upload_file_path
-                }
-                st.session_state.uploaded_documents.append(doc_info)
-                st.success(f"✅ File '{uploaded_file.name}' uploaded successfully and added to database!")
+                # Verify document was added to database
+                documents = get_documents_from_db()
+                if any(doc["filename"] == uploaded_file.name for doc in documents):
+                    doc_info = {
+                        "name": uploaded_file.name,
+                        "size": f"{file_size / 1024:.1f} KB",
+                        "upload_time": datetime.now().strftime("%H:%M:%S"),
+                        "source_path": upload_file_path
+                    }
+                    st.session_state.uploaded_documents.append(doc_info)
+                    st.success(f"🎉 File '{uploaded_file.name}' fully uploaded and verified in database!")
+
+                    # Show database status
+                    st.info(f"📊 Database now contains {len(documents)} documents")
+                else:
+                    st.error(f"❌ File saved locally but not found in database")
             else:
-                st.error(f"❌ Failed to add file '{uploaded_file.name}' to database")
-                
+                st.error(f"❌ Failed to save file '{uploaded_file.name}' to database")
+
         except Exception as e:
-            st.error(f"Error saving file: {e}")
+            st.error(f"❌ Error saving file: {e}")
+            st.error(f"File path: {upload_file_path}")
 
 def update_extraction_source(source):
     """Update the source (URL or file path) in 1-extraction.py"""
@@ -632,6 +852,12 @@ def run_extraction(source_path):
 def run_chunking():
     """Run the chunking process using database-based chunking"""
     try:
+        st.info("🔪 Running chunking script: 2-chunking-neon.py")
+
+        # Get current chunk count before processing
+        chunks_before = get_chunks_from_db()
+        chunks_before_count = len(chunks_before)
+
         result = subprocess.run(
             [sys.executable, "2-chunking-neon.py"],
             capture_output=True,
@@ -639,14 +865,41 @@ def run_chunking():
             cwd=os.getcwd(),
             timeout=300  # 5 minute timeout
         )
-        
+
         if result.returncode == 0:
+            st.success("✅ Chunking script completed successfully")
+
+            # Check if chunks were actually created in database
+            time.sleep(2)  # Give database time to update
+            chunks_after = get_chunks_from_db()
+            chunks_after_count = len(chunks_after)
+            new_chunks = chunks_after_count - chunks_before_count
+
+            if new_chunks > 0:
+                st.success(f"✅ Chunking created {new_chunks} new chunks in database!")
+
+                # Show details of new chunks
+                recent_chunks = [c for c in chunks_after if c not in chunks_before]
+                if recent_chunks:
+                    st.info(f"📊 Recent chunks created:")
+                    for chunk in recent_chunks[:3]:  # Show first 3
+                        st.text(f"  • {chunk['filename']} (Chunk {chunk['chunk_index']})")
+                    if len(recent_chunks) > 3:
+                        st.text(f"  • ... and {len(recent_chunks) - 3} more chunks")
+            else:
+                st.warning("⚠️ Chunking completed but no new chunks found in database")
+                st.info("💡 This might indicate the document was already chunked or an issue with database storage")
+
             return True, result.stdout
         else:
+            st.error(f"❌ Chunking script failed (exit code: {result.returncode})")
+            st.error(f"Script output: {result.stderr}")
             return False, result.stderr
     except Exception as e:
         if "timed out" in str(e):
+            st.error("⏰ Chunking timed out after 5 minutes")
             return False, "Chunking timed out after 5 minutes."
+        st.error(f"💥 Unexpected error during chunking: {e}")
         return False, f"Unexpected error: {str(e)}"
 
 
@@ -655,23 +908,33 @@ def run_embedding():
     try:
         # Build command with API keys from session state
         cmd = [sys.executable, "3-embedding-neon.py"]
-        
+
         # Add embedding provider argument
         embedding_provider = st.session_state.get("embedding_provider", "openai")
         cmd.extend(["--embedding-provider", embedding_provider])
-        
+
         # Add API key arguments based on provider
         if embedding_provider == "openai":
             if st.session_state.openai_client:
                 # Extract API key from the client
                 api_key = st.session_state.openai_client.api_key
                 cmd.extend(["--openai-api-key", api_key])
+                st.info(f"🧬 Running embedding with OpenAI provider")
+            else:
+                return False, "❌ OpenAI client not configured"
         elif embedding_provider == "mistral":
             if st.session_state.mistral_client:
                 # Extract API key from the client (Mistral stores it in sdk_configuration.security.api_key)
                 api_key = st.session_state.mistral_client.sdk_configuration.security.api_key
                 cmd.extend(["--mistral-api-key", api_key])
-        
+                st.info(f"🧬 Running embedding with Mistral provider")
+            else:
+                return False, "❌ Mistral client not configured"
+
+        # Get current embedding count before processing
+        embeddings_before = get_embeddings_from_db()
+        embeddings_before_count = len(embeddings_before)
+
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -679,15 +942,41 @@ def run_embedding():
             cwd=os.getcwd(),
             timeout=300  # 5 minute timeout
         )
-        
+
         if result.returncode == 0:
+            st.success("✅ Embedding script completed successfully")
+
+            # Check if embeddings were actually created in database
+            time.sleep(2)  # Give database time to update
+            embeddings_after = get_embeddings_from_db()
+            embeddings_after_count = len(embeddings_after)
+            new_embeddings = embeddings_after_count - embeddings_before_count
+
+            if new_embeddings > 0:
+                st.success(f"✅ Embedding created {new_embeddings} new embeddings in database!")
+
+                # Show details of new embeddings
+                recent_embeddings = [e for e in embeddings_after if e not in embeddings_before]
+                if recent_embeddings:
+                    st.info(f"📊 Recent embeddings created:")
+                    for embedding in recent_embeddings[:3]:  # Show first 3
+                        st.text(f"  • {embedding['filename']} ({embedding['embedding_provider']})")
+                    if len(recent_embeddings) > 3:
+                        st.text(f"  • ... and {len(recent_embeddings) - 3} more embeddings")
+            else:
+                st.warning("⚠️ Embedding completed but no new embeddings found in database")
+                st.info("💡 This might indicate all chunks were already embedded or an issue with database storage")
+
             return True, result.stdout
         else:
+            st.error(f"❌ Embedding script failed (exit code: {result.returncode})")
+            st.error(f"Script output: {result.stderr}")
             return False, result.stderr
     except Exception as e:
         if "timed out" in str(e):
+            st.error("⏰ Embedding timed out after 5 minutes")
             return False, "Embedding timed out after 5 minutes."
-        st.error(f"Embedding error: {e}") # Display error in Streamlit
+        st.error(f"💥 Unexpected error during embedding: {e}")
         return False, f"Unexpected error: {str(e)}"
 
 
@@ -1480,24 +1769,71 @@ with st.sidebar:
     
     # Process chunking
     if chunk_btn:
-        with st.status("🔄 Processing chunking...", expanded=True) as status:
-            st.write("🔪 Chunking document content...")
-            success, output = run_chunking()
-            st.session_state["chunking_successful"] = False
-            
-            if success:
-                st.write("✅ Chunking completed successfully!")
-                st.code(output, language="text")
-                status.update(label="✅ Chunking Complete!", state="complete")
-                st.session_state["chunking_successful"] = True
-                st.success("Document chunked successfully! 🎯")
-                
-                # Auto-refresh to show updated state
-                st.rerun()
+        if not st.session_state.uploaded_documents:
+            st.warning("📝 Please upload a document first")
+        else:
+            selected_doc = next((doc for doc in st.session_state.uploaded_documents if doc["name"] == selected_file), None)
+            if not selected_doc:
+                st.warning("⚠️ Please select a file to process first")
             else:
-                st.error("❌ Chunking failed")
-                st.code(output, language="text")
-                status.update(label="❌ Chunking Failed", state="error")
+                with st.status("🔄 Processing chunking...", expanded=True) as status:
+                    st.write(f"🔪 Chunking document: {selected_doc['name']}")
+                    st.write(f"File path: {selected_doc['source_path']}")
+
+                    # Check if file exists before processing
+                    if not os.path.exists(selected_doc['source_path']):
+                        st.error(f"❌ File not found: {selected_doc['source_path']}")
+                        status.update(label="❌ File Not Found", state="error")
+                    else:
+                        success, output = run_chunking()
+                        st.session_state["chunking_successful"] = False
+
+                        if success:
+                            st.write("✅ Chunking completed successfully!")
+                            st.code(output, language="text")
+
+                            # Check if chunks were actually created in database
+                            time.sleep(1)  # Brief pause to let database update
+                            chunks = get_chunks_from_db()
+                            chunk_count = len(chunks)
+
+                            if chunk_count > 0:
+                                st.success(f"✅ Chunking created {chunk_count} chunks in database!")
+                                status.update(label=f"✅ Chunking Complete! ({chunk_count} chunks)", state="complete")
+                                st.session_state["chunking_successful"] = True
+                                st.balloons()
+
+                                # Show recent chunks
+                                recent_chunks = [c for c in chunks if c["filename"] == selected_doc["name"]]
+                                if recent_chunks:
+                                    st.info(f"📊 Created {len(recent_chunks)} chunks for '{selected_doc['name']}'")
+                            else:
+                                st.warning("⚠️ Chunking completed but no chunks found in database")
+                                st.info("This might indicate an issue with database storage. Check the output above for errors.")
+                                status.update(label="⚠️ Chunking Completed (No DB Update)", state="complete")
+
+                            # Auto-refresh to show updated state
+                            st.rerun()
+                        else:
+                            st.error("❌ Chunking failed")
+                            st.code(output, language="text")
+                            status.update(label="❌ Chunking Failed", state="error")
+
+                            # Show troubleshooting tips
+                            with st.expander("🔧 Troubleshooting Tips", expanded=True):
+                                st.markdown("""
+                                **Common chunking issues:**
+
+                                1. **File not found**: Make sure the file exists at the specified path
+                                2. **Database connection**: Check if NEON_CONNECTION_STRING is set correctly
+                                3. **Script errors**: Check the error output above for specific issues
+                                4. **Dependencies**: Ensure all required packages are installed
+
+                                **Debug steps:**
+                                - Check if the file exists: `{selected_doc['source_path']}`
+                                - Verify database connection string in .env file
+                                - Try running the script manually: `python 2-chunking-neon.py`
+                                """)
     
     # Process embedding
     if embed_btn:
@@ -1523,428 +1859,305 @@ with st.sidebar:
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-# Main content area - Chat interface (default view)
+# Main content area with tabs
 st.markdown('<div class="main-header">📚 Document Q&A Assistant</div>', unsafe_allow_html=True)
 
-# Messages area with scrolling
-st.markdown('<div class="chat-container">', unsafe_allow_html=True)
-st.markdown('<div class="chat-messages">', unsafe_allow_html=True)
+# Create tabs for Chat and Database Management
+tab1, tab2 = st.tabs(["💬 Chat", "🗃️ Database Management"])
 
-# Display all chat messages inside the container using custom styling
-if st.session_state.messages:
-    for message in st.session_state.messages:
-        if message["role"] == "user":
-            st.markdown(f"""
-            <div style="background: linear-gradient(145deg, #e3f2fd, #bbdefb);
-                        border-left: 4px solid #2196f3;
-                        border-radius: 15px;
-                        padding: 1rem;
-                        margin: 0.5rem 0;
-                        box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
-                <strong>👤 You:</strong><br>
-                {message["content"]}
+# Tab 1: Chat Interface
+with tab1:
+    # Simple chat interface without complex containers
+    chat_container = st.container()
+
+    with chat_container:
+        # Messages area - using Streamlit's native chat components for better layout
+        if st.session_state.messages:
+            for message in st.session_state.messages:
+                if message["role"] == "user":
+                    with st.chat_message("user"):
+                        st.write(message["content"])
+                else:
+                    with st.chat_message("assistant"):
+                        st.write(message["content"])
+        else:
+            # Simple empty state without complex styling
+            st.markdown("""
+            <div style="text-align: center; padding: 2rem; color: #6c757d; background: rgba(102, 126, 234, 0.05); border-radius: 10px; border: 1px solid rgba(102, 126, 234, 0.1);">
+                <div style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.7;">💬</div>
+                <h3 style="font-size: 1.5rem; font-weight: 600; margin-bottom: 1rem; color: #667eea;">Start a conversation</h3>
+                <p style="font-size: 1rem; margin: 0 auto; line-height: 1.6; color: #6c757d;">Ask questions about your documents using the chat input below.</p>
             </div>
             """, unsafe_allow_html=True)
-        else:
-            st.markdown(f"""
-            <div style="background: linear-gradient(145deg, #f3e5f5, #e1bee7);
-                        border-left: 4px solid #9c27b0;
-                        border-radius: 15px;
-                        padding: 1rem;
-                        margin: 0.5rem 0;
-                        box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
-                <strong>🤖 Assistant:</strong><br>
-                {message["content"]}
-            </div>
-            """, unsafe_allow_html=True)
-else:
-    # Show empty state when no messages
-    st.markdown("""
-    <div style="text-align: center; padding: 4rem; color: #6c757d; animation: fadeInUp 0.8s ease-out;">
-        <div style="font-size: 4rem; margin-bottom: 1rem; opacity: 0.7;">💬</div>
-        <h3 style="font-size: 1.8rem; font-weight: 600; margin-bottom: 1rem; background: linear-gradient(135deg, #667eea, #764ba2); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Start a conversation</h3>
-        <p style="font-size: 1.1rem; max-width: 600px; margin: 0 auto; line-height: 1.6;">Ask questions about your documents using the chat input below. I'll help you find relevant information from your uploaded files.</p>
-        <div style="margin-top: 2rem; padding: 1.5rem; background: rgba(102, 126, 234, 0.05); border-radius: 15px; border: 1px solid rgba(102, 126, 234, 0.1);">
-            <p style="margin: 0; font-size: 0.9rem; color: #667eea;"><strong>💡 Tip:</strong> Make sure your documents are processed (Extract → Chunk → Embed) before asking questions!</p>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
 
-st.markdown('</div>', unsafe_allow_html=True)  # Close chat-messages div
-st.markdown('</div>', unsafe_allow_html=True)  # Close chat-container div
+    # Chat input using Streamlit's native component
+    if prompt := st.chat_input("💬 Ask a question about the document...", key="chat_input"):
+        # Add user message to chat history first
+        st.session_state.messages.append({"role": "user", "content": prompt})
 
-# Chat input at the bottom
-if prompt := st.chat_input("💬 Ask a question about the document..."):
-    # Add user message to chat history first
-    st.session_state.messages.append({"role": "user", "content": prompt})
+        # Get relevant context using embeddings
+        with st.status("🔍 Searching embeddings...", expanded=False) as status:
+            # For embeddings, we don't need the source file - use empty string
+            context = get_context(prompt, "")
 
-    # Get relevant context using embeddings
-    with st.status("🔍 Searching embeddings...", expanded=False) as status:
-        # For embeddings, we don't need the source file - use empty string
-        context = get_context(prompt, "")
+        # Add assistant response to chat history
+        response = get_chat_response(st.session_state.messages, context)
+        st.session_state.messages.append({"role": "assistant", "content": response})
 
-    # Add assistant response to chat history
-    response = get_chat_response(st.session_state.messages, context)
-    st.session_state.messages.append({"role": "assistant", "content": response})
+        # Rerun to update the chat display
+        st.rerun()
 
-    # Rerun to update the chat display
-    st.rerun()
+# Tab 2: Database Management
+with tab2:
+    st.markdown("### 🗃️ Database Management")
 
-# Create tabs for additional functionalities
-tab1, = st.tabs(["🗃️ Database Management"])
-
-with tab1:
-    st.markdown('<div class="main-header">🗃️ Database Management</div>', unsafe_allow_html=True)
-
-    # Create subtabs for documents, chunks, and embeddings
-    subtab1, subtab2, subtab3 = st.tabs(["📄 Documents", "🔪 Chunks", "🧬 Embeddings"])
-
-    with subtab1:
-        st.subheader("📄 Manage Documents")
-        st.markdown("View and manage documents stored in the database")
-
-        if st.button("🔄 Refresh Documents List", key="refresh_docs"):
+    # Add refresh, verification, sync, and debug buttons
+    col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+    with col1:
+        if st.button("🔄 Refresh", use_container_width=True):
             st.rerun()
+    with col2:
+        if st.button("🔍 Verify DB", use_container_width=True):
+            with st.spinner("Checking database integrity..."):
+                issues = verify_database_integrity()
+                if not issues:
+                    st.success("✅ Database integrity check passed!")
+                else:
+                    for issue in issues:
+                        st.warning(issue)
+    with col3:
+        if st.button("🔄 Sync Files", use_container_width=True):
+            with st.spinner("Syncing local files to database..."):
+                synced_count = sync_local_files_to_database()
+                if synced_count > 0:
+                    st.success(f"✅ Synced {synced_count} files to database!")
+                    st.rerun()
+                else:
+                    st.info("ℹ️ All local files are already in database")
+    with col4:
+        if st.button("🐛 Debug DB", use_container_width=True):
+            with st.spinner("Analyzing database content..."):
+                debug_info = debug_database_content()
+                st.code(debug_info, language="text")
 
-        documents = get_documents_from_db()
+    # Add direct database check
+    st.markdown("#### 🔍 Direct Database Check")
+    if st.button("🔍 Check Neon DB Contents", type="secondary", use_container_width=True):
+        with st.spinner("Querying Neon database..."):
+            debug_info = debug_database_content()
+            st.markdown(debug_info)
 
-        if documents:
-            st.success(f"✅ Found {len(documents)} documents in database")
+            # Also show a summary
+            if "❌ Cannot connect" in debug_info:
+                st.error("❌ Cannot connect to your Neon database. Check your NEON_CONNECTION_STRING.")
+            elif "embeddings: 0 records" in debug_info:
+                st.warning("⚠️ No embeddings found in database. Run embedding process to create them.")
+            elif "embeddings:" in debug_info and "0 records" not in debug_info:
+                st.success("✅ Embeddings found in database!")
 
+    # Get database information
+    documents = get_documents_from_db()
+    chunks = get_chunks_from_db()
+    embeddings = get_embeddings_from_db()
+
+    # Show processing status and guidance
+    if documents:
+        processed_docs = [doc for doc in documents if doc["processed"]]
+        unprocessed_docs = [doc for doc in documents if not doc["processed"]]
+
+        if unprocessed_docs:
+            st.warning(f"⚠️ **Processing Required**: {len(unprocessed_docs)} of {len(documents)} documents need processing")
+
+            with st.expander("📋 Documents Needing Processing", expanded=True):
+                for doc in unprocessed_docs:
+                    st.markdown(f"""
+                    **📄 {doc["filename"]}** ⏳<br>
+                    <small>Size: {doc["file_size"]/1024:.1f} KB | Uploaded: {doc["upload_date"]}</small><br>
+                    <small>Status: Needs Extraction → Chunking → Embedding</small>
+                    """, unsafe_allow_html=True)
+
+                    if st.button("🚀 Process Document", key=f"process_{doc['id']}", help=f"Start processing {doc['filename']}"):
+                        st.info(f"💡 Use the sidebar to process '{doc['filename']}' with: Extract → Chunk → Embed")
+                        st.session_state.selected_file = doc["filename"]
+
+            if processed_docs:
+                st.success(f"✅ **{len(processed_docs)} documents** are fully processed and ready for questions!")
+
+        # Create columns for different database views
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("#### 📄 All Documents")
             for doc in documents:
-                with st.expander(f"📄 {doc['filename']} ({doc['file_type']})", expanded=False):
-                    col1, col2, col3 = st.columns([3, 1, 1])
+                status_icon = "✅" if doc["processed"] else "⏳"
+                status_text = "Processed" if doc["processed"] else "Unprocessed"
+                st.markdown(f"""
+                **{doc["filename"]}** {status_icon}<br>
+                <small>Size: {doc["file_size"]/1024:.1f} KB | Status: {status_text} | Uploaded: {doc["upload_date"]}</small>
+                """, unsafe_allow_html=True)
 
-                    with col1:
-                        st.write(f"**File Path:** {doc['file_path']}")
-                        st.write(f"**Size:** {doc['file_size']} bytes")
-                        st.write(f"**Uploaded:** {doc['upload_date']}")
-                        st.write(f"**Processed:** {'✅' if doc['processed'] else '❌'}")
-                        if doc['processing_date']:
-                            st.write(f"**Processing Date:** {doc['processing_date']}")
+                if not doc["processed"]:
+                    st.info("💡 Process this document using sidebar: Extract → Chunk → Embed")
+                else:
+                    # Check if document has chunks
+                    doc_chunks = [c for c in chunks if c["filename"] == doc["filename"]]
+                    has_chunks = len(doc_chunks) > 0
 
-                    with col2:
-                        if st.button("🗑️ Delete", key=f"delete_doc_{doc['id']}"):
-                            if delete_document_from_db(doc['id']):
-                                st.success(f"✅ Document '{doc['filename']}' deleted successfully!")
+                    if has_chunks:
+                        col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1])
+                        with col_btn1:
+                            if st.button("🗑️ Delete", key=f"del_doc_{doc['id']}", help=f"Delete {doc['filename']}"):
+                                if delete_document_from_db(doc["id"]):
+                                    st.success(f"✅ Document '{doc['filename']}' deleted successfully!")
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ Failed to delete document '{doc['filename']}'")
+                        with col_btn2:
+                            if st.button("📋 Chunks", key=f"chunks_{doc['id']}", help=f"View chunks for {doc['filename']}"):
+                                st.session_state.selected_doc_for_chunks = doc["id"]
+                        with col_btn3:
+                            if st.button("🔍 Embeddings", key=f"embeddings_{doc['id']}", help=f"View embeddings for {doc['filename']}"):
+                                st.session_state.selected_doc_for_embeddings = doc["id"]
+                    else:
+                        # Document is marked as processed but has no chunks
+                        st.warning(f"⚠️ Document marked as processed but has no chunks")
+                        col_btn1, col_btn2 = st.columns([1, 1])
+                        with col_btn1:
+                            if st.button("🔄 Reset", key=f"reset_doc_{doc['id']}", help=f"Reset {doc['filename']} for reprocessing"):
+                                if reset_document_for_reprocessing(doc["id"]):
+                                    st.success(f"✅ Document '{doc['filename']}' reset for reprocessing!")
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ Failed to reset document '{doc['filename']}'")
+                        with col_btn2:
+                            if st.button("🗑️ Delete", key=f"del_doc_{doc['id']}", help=f"Delete {doc['filename']}"):
+                                if delete_document_from_db(doc["id"]):
+                                    st.success(f"✅ Document '{doc['filename']}' deleted successfully!")
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ Failed to delete document '{doc['filename']}'")
+                st.markdown("---")
+    else:
+        st.info("📝 No documents found in database - upload documents using the sidebar first")
+
+    with col2:
+        st.markdown("#### 🔪 Document Chunks")
+        if chunks:
+            st.success(f"✅ Found {len(chunks)} chunks from processed documents")
+
+            # Group chunks by document
+            chunks_by_doc = {}
+            for chunk in chunks:
+                doc_name = chunk["filename"]
+                if doc_name not in chunks_by_doc:
+                    chunks_by_doc[doc_name] = []
+                chunks_by_doc[doc_name].append(chunk)
+
+            # Show chunks for each document
+            for doc_name, doc_chunks in chunks_by_doc.items():
+                with st.expander(f"📄 {doc_name} ({len(doc_chunks)} chunks)", expanded=False):
+                    for chunk in doc_chunks[:5]:  # Show first 5 chunks per document
+                        st.markdown(f"""
+                        **Chunk {chunk["chunk_index"]}**<br>
+                        <small>Tokens: {chunk["token_count"]} | Type: {chunk["chunk_type"]}</small><br>
+                        <small>Preview: {chunk["chunk_text"][:150]}...</small>
+                        """, unsafe_allow_html=True)
+
+                        if st.button("🗑️ Delete Chunk", key=f"del_chunk_{chunk['id']}", help=f"Delete chunk {chunk['chunk_index']}"):
+                            if delete_chunk_from_db(chunk["id"]):
+                                st.success(f"✅ Chunk {chunk['chunk_index']} deleted successfully!")
                                 st.rerun()
                             else:
-                                st.error(f"❌ Failed to delete document '{doc['filename']}'")
-
-                    with col3:
-                        if st.button("📊 View Details", key=f"view_doc_{doc['id']}"):
-                            # Count related chunks
-                            conn = get_db_connection()
-                            if conn:
-                                try:
-                                    with conn.cursor() as cur:
-                                        cur.execute("SELECT COUNT(*) FROM document_chunks WHERE document_id = %s", (doc['id'],))
-                                        chunk_count = cur.fetchone()[0]
-                                        cur.execute("SELECT COUNT(*) FROM embeddings WHERE chunk_id IN (SELECT id FROM document_chunks WHERE document_id = %s)", (doc['id'],))
-                                        embedding_count = cur.fetchone()[0]
-                                        st.info(f"**Related Data:** {chunk_count} chunks, {embedding_count} embeddings")
-                                except Exception as e:
-                                    st.error(f"Error counting related data: {e}")
-                                finally:
-                                    conn.close()
-        else:
-            st.info("📝 No documents found in the database")
-
-    with subtab2:
-        st.subheader("🔪 Manage Chunks")
-        st.markdown("View and manage document chunks stored in the database")
-
-        if st.button("🔄 Refresh Chunks List", key="refresh_chunks"):
-            st.rerun()
-
-        chunks = get_chunks_from_db()
-
-        if chunks:
-            st.success(f"✅ Found {len(chunks)} chunks in database")
-
-            # Group chunks by filename for better organization
-            chunks_by_file = {}
-            for chunk in chunks:
-                filename = chunk['filename']
-                if filename not in chunks_by_file:
-                    chunks_by_file[filename] = []
-                chunks_by_file[filename].append(chunk)
-
-            for filename, file_chunks in chunks_by_file.items():
-                with st.expander(f"📄 {filename} ({len(file_chunks)} chunks)", expanded=False):
-                    for chunk in file_chunks:
-                        col1, col2, col3 = st.columns([3, 1, 1])
-
-                        with col1:
-                            st.write(f"**Chunk #{chunk['chunk_index']}**")
-                            if chunk['section_title']:
-                                st.write(f"**Section:** {chunk['section_title']}")
-                            if chunk['page_numbers']:
-                                st.write(f"**Pages:** {chunk['page_numbers']}")
-                            st.write(f"**Type:** {chunk['chunk_type']}")
-                            st.write(f"**Tokens:** {chunk['token_count']}")
-                            st.write(f"**Created:** {chunk['created_at']}")
-
-                            # Show preview of chunk text
-                            preview_text = chunk['chunk_text'][:200] + "..." if len(chunk['chunk_text']) > 200 else chunk['chunk_text']
-                            if st.button("👁️ Preview Text", key=f"preview_{chunk['id']}"):
-                                st.text_area("Preview Content", preview_text, height=100, disabled=True)
-
-                        with col2:
-                            if st.button("🗑️ Delete", key=f"delete_chunk_{chunk['id']}"):
-                                if delete_chunk_from_db(chunk['id']):
-                                    st.success(f"✅ Chunk #{chunk['chunk_index']} deleted successfully!")
-                                    st.rerun()
-                                else:
-                                    st.error(f"❌ Failed to delete chunk #{chunk['chunk_index']}")
-
-                        with col3:
-                            if st.button("📊 View Details", key=f"view_chunk_{chunk['id']}"):
-                                # Count related embeddings
-                                conn = get_db_connection()
-                                if conn:
-                                    try:
-                                        with conn.cursor() as cur:
-                                            cur.execute("SELECT COUNT(*) FROM embeddings WHERE chunk_id = %s", (chunk['id'],))
-                                            embedding_count = cur.fetchone()[0]
-                                            st.info(f"**Related Embeddings:** {embedding_count}")
-                                    except Exception as e:
-                                        st.error(f"Error counting embeddings: {e}")
-                                    finally:
-                                        conn.close()
+                                st.error(f"❌ Failed to delete chunk {chunk['chunk_index']}")
 
                         st.markdown("---")
+                    if len(doc_chunks) > 5:
+                        st.info(f"📊 Showing 5 of {len(doc_chunks)} chunks for {doc_name}")
         else:
-            st.info("🔪 No chunks found in the database")
+            if documents and not any(doc["processed"] for doc in documents):
+                st.warning("⚠️ No chunks found - documents need to be processed first")
+                st.info("💡 Use the sidebar to run: Extract → Chunk → Embed on your uploaded documents")
+            else:
+                st.info("🔪 No chunks found in database")
 
-    with subtab3:
-        st.subheader("🧬 Manage Embeddings")
-        st.markdown("View and manage embeddings stored in the database")
+    # Embeddings section (full width)
+    st.markdown("#### 🧬 Embeddings")
+    if embeddings:
+        st.success(f"✅ Found {len(embeddings)} embeddings from processed documents")
 
-        if st.button("🔄 Refresh Embeddings List", key="refresh_embeddings"):
-            st.rerun()
+        # Group embeddings by document
+        embeddings_by_doc = {}
+        for embedding in embeddings:
+            doc_name = embedding["filename"]
+            if doc_name not in embeddings_by_doc:
+                embeddings_by_doc[doc_name] = []
+            embeddings_by_doc[doc_name].append(embedding)
 
-        embeddings = get_embeddings_from_db()
-
-        if embeddings:
-            st.success(f"✅ Found {len(embeddings)} embeddings in database")
-
-            # Group embeddings by provider for better organization
-            embeddings_by_provider = {}
-            for embedding in embeddings:
-                provider = embedding['embedding_provider']
-                if provider not in embeddings_by_provider:
-                    embeddings_by_provider[provider] = []
-                embeddings_by_provider[provider].append(embedding)
-
-            for provider, provider_embeddings in embeddings_by_provider.items():
-                with st.expander(f"🧬 {provider.upper()} Embeddings ({len(provider_embeddings)} entries)", expanded=False):
-                    for embedding in provider_embeddings:
-                        col1, col2, col3 = st.columns([3, 1, 1])
-
-                        with col1:
-                            st.write(f"**Filename:** {embedding['filename']}")
-                            if embedding['original_filename']:
-                                st.write(f"**Original:** {embedding['original_filename']}")
-                            if embedding['title']:
-                                st.write(f"**Title:** {embedding['title']}")
-                            if embedding['page_numbers']:
-                                st.write(f"**Pages:** {embedding['page_numbers']}")
-                            st.write(f"**Model:** {embedding['embedding_model']}")
-                            st.write(f"**Created:** {embedding['created_at']}")
-
-                        with col2:
-                            if st.button("🗑️ Delete", key=f"delete_embedding_{embedding['id']}"):
-                                if delete_embedding_from_db(embedding['id']):
-                                    st.success(f"✅ Embedding deleted successfully!")
-                                    st.rerun()
-                                else:
-                                    st.error(f"❌ Failed to delete embedding")
-
-                        with col3:
-                            if st.button("📊 View Details", key=f"view_embedding_{embedding['id']}"):
-                                st.info(f"**Embedding ID:** {embedding['id']}")
-                                st.info(f"**Provider:** {embedding['embedding_provider']}")
-                                st.info(f"**Model:** {embedding['embedding_model']}")
-
-                        st.markdown("---")
-        else:
-            st.info("🧬 No embeddings found in the database")
-
-with tab1:
-    st.markdown('<div class="main-header">🗃️ Database Management</div>', unsafe_allow_html=True)
-    
-    # Create subtabs for documents, chunks, and embeddings
-    subtab1, subtab2, subtab3 = st.tabs(["📄 Documents", "🔪 Chunks", "🧬 Embeddings"])
-    
-    with subtab1:
-        st.subheader("📄 Manage Documents")
-        st.markdown("View and manage documents stored in the database")
-        
-        if st.button("🔄 Refresh Documents List", key="refresh_docs"):
-            st.rerun()
-        
-        documents = get_documents_from_db()
-        
-        if documents:
-            st.success(f"✅ Found {len(documents)} documents in database")
-            
-            for doc in documents:
-                with st.expander(f"📄 {doc['filename']} ({doc['file_type']})", expanded=False):
-                    col1, col2, col3 = st.columns([3, 1, 1])
-                    
+        # Show embeddings for each document
+        for doc_name, doc_embeddings in embeddings_by_doc.items():
+            with st.expander(f"📄 {doc_name} ({len(doc_embeddings)} embeddings)", expanded=False):
+                for embedding in doc_embeddings[:5]:  # Show first 5 embeddings per document
+                    col1, col2 = st.columns([3, 1])
                     with col1:
-                        st.write(f"**File Path:** {doc['file_path']}")
-                        st.write(f"**Size:** {doc['file_size']} bytes")
-                        st.write(f"**Uploaded:** {doc['upload_date']}")
-                        st.write(f"**Processed:** {'✅' if doc['processed'] else '❌'}")
-                        if doc['processing_date']:
-                            st.write(f"**Processing Date:** {doc['processing_date']}")
-                    
+                        st.markdown(f"""
+                        **{embedding["filename"]}**<br>
+                        <small>Provider: {embedding["embedding_provider"]} | Model: {embedding["embedding_model"]}</small><br>
+                        <small>Created: {embedding["created_at"]}</small>
+                        """, unsafe_allow_html=True)
                     with col2:
-                        if st.button("🗑️ Delete", key=f"delete_doc_{doc['id']}"):
-                            if delete_document_from_db(doc['id']):
-                                st.success(f"✅ Document '{doc['filename']}' deleted successfully!")
+                        if st.button("🗑️ Delete", key=f"del_emb_{embedding['id']}", help=f"Delete embedding for {embedding['filename']}"):
+                            if delete_embedding_from_db(embedding["id"]):
+                                st.success(f"✅ Embedding for '{embedding['filename']}' deleted successfully!")
                                 st.rerun()
                             else:
-                                st.error(f"❌ Failed to delete document '{doc['filename']}'")
-                    
-                    with col3:
-                        if st.button("📊 View Details", key=f"view_doc_{doc['id']}"):
-                            # Count related chunks
-                            conn = get_db_connection()
-                            if conn:
-                                try:
-                                    with conn.cursor() as cur:
-                                        cur.execute("SELECT COUNT(*) FROM document_chunks WHERE document_id = %s", (doc['id'],))
-                                        chunk_count = cur.fetchone()[0]
-                                        cur.execute("SELECT COUNT(*) FROM embeddings WHERE chunk_id IN (SELECT id FROM document_chunks WHERE document_id = %s)", (doc['id'],))
-                                        embedding_count = cur.fetchone()[0]
-                                        st.info(f"**Related Data:** {chunk_count} chunks, {embedding_count} embeddings")
-                                except Exception as e:
-                                    st.error(f"Error counting related data: {e}")
-                                finally:
-                                    conn.close()
-        else:
-            st.info("📝 No documents found in the database")
-    
-    with subtab2:
-        st.subheader("🔪 Manage Chunks")
-        st.markdown("View and manage document chunks stored in the database")
-        
-        if st.button("🔄 Refresh Chunks List", key="refresh_chunks"):
-            st.rerun()
-        
-        chunks = get_chunks_from_db()
-        
+                                st.error(f"❌ Failed to delete embedding for '{embedding['filename']}'")
+                if len(doc_embeddings) > 5:
+                    st.info(f"📊 Showing 5 of {len(doc_embeddings)} embeddings for {doc_name}")
+    else:
         if chunks:
-            st.success(f"✅ Found {len(chunks)} chunks in database")
-            
-            # Group chunks by filename for better organization
-            chunks_by_file = {}
-            for chunk in chunks:
-                filename = chunk['filename']
-                if filename not in chunks_by_file:
-                    chunks_by_file[filename] = []
-                chunks_by_file[filename].append(chunk)
-            
-            for filename, file_chunks in chunks_by_file.items():
-                with st.expander(f"📄 {filename} ({len(file_chunks)} chunks)", expanded=False):
-                    for chunk in file_chunks:
-                        col1, col2, col3 = st.columns([3, 1, 1])
-                        
-                        with col1:
-                            st.write(f"**Chunk #{chunk['chunk_index']}**")
-                            if chunk['section_title']:
-                                st.write(f"**Section:** {chunk['section_title']}")
-                            if chunk['page_numbers']:
-                                st.write(f"**Pages:** {chunk['page_numbers']}")
-                            st.write(f"**Type:** {chunk['chunk_type']}")
-                            st.write(f"**Tokens:** {chunk['token_count']}")
-                            st.write(f"**Created:** {chunk['created_at']}")
-                            
-                            # Show preview of chunk text
-                            preview_text = chunk['chunk_text'][:200] + "..." if len(chunk['chunk_text']) > 200 else chunk['chunk_text']
-                            if st.button("👁️ Preview Text", key=f"preview_{chunk['id']}"):
-                                st.text_area("Preview Content", preview_text, height=100, disabled=True)
-                        
-                        with col2:
-                            if st.button("🗑️ Delete", key=f"delete_chunk_{chunk['id']}"):
-                                if delete_chunk_from_db(chunk['id']):
-                                    st.success(f"✅ Chunk #{chunk['chunk_index']} deleted successfully!")
-                                    st.rerun()
-                                else:
-                                    st.error(f"❌ Failed to delete chunk #{chunk['chunk_index']}")
-                        
-                        with col3:
-                            if st.button("📊 View Details", key=f"view_chunk_{chunk['id']}"):
-                                # Count related embeddings
-                                conn = get_db_connection()
-                                if conn:
-                                    try:
-                                        with conn.cursor() as cur:
-                                            cur.execute("SELECT COUNT(*) FROM embeddings WHERE chunk_id = %s", (chunk['id'],))
-                                            embedding_count = cur.fetchone()[0]
-                                            st.info(f"**Related Embeddings:** {embedding_count}")
-                                    except Exception as e:
-                                        st.error(f"Error counting embeddings: {e}")
-                                    finally:
-                                        conn.close()
-                        
-                        st.markdown("---")
+            st.warning("⚠️ No embeddings found - documents have been chunked but not embedded yet")
+            st.info("💡 Use the sidebar to run: Embed on your chunked documents")
+        elif documents and any(doc["processed"] for doc in documents):
+            st.warning("⚠️ No embeddings found - documents are processed but not embedded")
+            st.info("💡 Use the sidebar to run: Embed on your processed documents")
         else:
-            st.info("🔪 No chunks found in the database")
-    
-    with subtab3:
-        st.subheader("🧬 Manage Embeddings")
-        st.markdown("View and manage embeddings stored in the database")
-        
-        if st.button("🔄 Refresh Embeddings List", key="refresh_embeddings"):
-            st.rerun()
-        
-        embeddings = get_embeddings_from_db()
-        
-        if embeddings:
-            st.success(f"✅ Found {len(embeddings)} embeddings in database")
-            
-            # Group embeddings by provider for better organization
-            embeddings_by_provider = {}
-            for embedding in embeddings:
-                provider = embedding['embedding_provider']
-                if provider not in embeddings_by_provider:
-                    embeddings_by_provider[provider] = []
-                embeddings_by_provider[provider].append(embedding)
-            
-            for provider, provider_embeddings in embeddings_by_provider.items():
-                with st.expander(f"🧬 {provider.upper()} Embeddings ({len(provider_embeddings)} entries)", expanded=False):
-                    for embedding in provider_embeddings:
-                        col1, col2, col3 = st.columns([3, 1, 1])
-                        
-                        with col1:
-                            st.write(f"**Filename:** {embedding['filename']}")
-                            if embedding['original_filename']:
-                                st.write(f"**Original:** {embedding['original_filename']}")
-                            if embedding['title']:
-                                st.write(f"**Title:** {embedding['title']}")
-                            if embedding['page_numbers']:
-                                st.write(f"**Pages:** {embedding['page_numbers']}")
-                            st.write(f"**Model:** {embedding['embedding_model']}")
-                            st.write(f"**Created:** {embedding['created_at']}")
-                        
-                        with col2:
-                            if st.button("🗑️ Delete", key=f"delete_embedding_{embedding['id']}"):
-                                if delete_embedding_from_db(embedding['id']):
-                                    st.success(f"✅ Embedding deleted successfully!")
-                                    st.rerun()
-                                else:
-                                    st.error(f"❌ Failed to delete embedding")
-                        
-                        with col3:
-                            if st.button("📊 View Details", key=f"view_embedding_{embedding['id']}"):
-                                st.info(f"**Embedding ID:** {embedding['id']}")
-                                st.info(f"**Provider:** {embedding['embedding_provider']}")
-                                st.info(f"**Model:** {embedding['embedding_model']}")
-                        
-                        st.markdown("---")
-        else:
-            st.info("🧬 No embeddings found in the database")
+            st.info("🧬 No embeddings found in database")
+
+    # Database statistics
+    st.markdown("#### 📊 Database Statistics")
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        doc_count = len(documents)
+        st.metric("Documents", doc_count)
+
+    with col2:
+        chunk_count = len(chunks)
+        st.metric("Chunks", chunk_count)
+
+    with col3:
+        embedding_count = len(embeddings)
+        st.metric("Embeddings", embedding_count)
+
+    with col4:
+        # Calculate total size
+        total_size = sum(doc["file_size"] for doc in documents) if documents else 0
+        st.metric("Total Size", f"{total_size/1024/1024:.1f} MB")
+
+    # Processing status summary
+    if documents:
+        st.markdown("#### 📈 Processing Status Summary")
+        total_docs = len(documents)
+        processed_docs = len([doc for doc in documents if doc["processed"]])
+
+        if total_docs > 0:
+            progress = processed_docs / total_docs
+            st.progress(progress, text=f"Document Processing: {processed_docs}/{total_docs} completed")
+
+            if processed_docs == 0:
+                st.info("🚀 **Next Steps**: Use the sidebar to process your documents: Extract → Chunk → Embed")
+            elif processed_docs < total_docs:
+                st.warning(f"⚡ **{total_docs - processed_docs} documents** still need processing")
+            else:
+                st.success("🎉 **All documents are fully processed** and ready for questions!")
+
