@@ -1862,6 +1862,25 @@ with st.sidebar:
 # Main content area with tabs
 st.markdown('<div class="main-header">📚 Document Q&A Assistant</div>', unsafe_allow_html=True)
 
+# Chat input - must be outside tabs to avoid Streamlit restrictions
+chat_input_container = st.container()
+with chat_input_container:
+    if prompt := st.chat_input("💬 Ask a question about the document...", key="chat_input"):
+        # Add user message to chat history first
+        st.session_state.messages.append({"role": "user", "content": prompt})
+
+        # Get relevant context using embeddings
+        with st.status("🔍 Searching embeddings...", expanded=False) as status:
+            # For embeddings, we don't need the source file - use empty string
+            context = get_context(prompt, "")
+
+        # Add assistant response to chat history
+        response = get_chat_response(st.session_state.messages, context)
+        st.session_state.messages.append({"role": "assistant", "content": response})
+
+        # Rerun to update the chat display
+        st.rerun()
+
 # Create tabs for Chat and Database Management
 tab1, tab2 = st.tabs(["💬 Chat", "🗃️ Database Management"])
 
@@ -1889,23 +1908,6 @@ with tab1:
                 <p style="font-size: 1rem; margin: 0 auto; line-height: 1.6; color: #6c757d;">Ask questions about your documents using the chat input below.</p>
             </div>
             """, unsafe_allow_html=True)
-
-    # Chat input using Streamlit's native component
-    if prompt := st.chat_input("💬 Ask a question about the document...", key="chat_input"):
-        # Add user message to chat history first
-        st.session_state.messages.append({"role": "user", "content": prompt})
-
-        # Get relevant context using embeddings
-        with st.status("🔍 Searching embeddings...", expanded=False) as status:
-            # For embeddings, we don't need the source file - use empty string
-            context = get_context(prompt, "")
-
-        # Add assistant response to chat history
-        response = get_chat_response(st.session_state.messages, context)
-        st.session_state.messages.append({"role": "assistant", "content": response})
-
-        # Rerun to update the chat display
-        st.rerun()
 
 # Tab 2: Database Management
 with tab2:
