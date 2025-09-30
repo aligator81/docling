@@ -1922,32 +1922,26 @@ with st.sidebar:
 # Main content area with tabs
 st.markdown('<div class="main-header">📚 Document Q&A Assistant</div>', unsafe_allow_html=True)
 
-# Chat input - must be outside tabs to avoid Streamlit restrictions
+# Chat input - placed above tabs so responses appear above input
+st.markdown("### 💬 Ask Questions About Your Documents")
 chat_input_container = st.container()
 with chat_input_container:
-    st.markdown("### 💬 Ask Questions About Your Documents")
-
     if prompt := st.chat_input("💬 Ask a question about the document...", key="chat_input"):
         # Add user message to chat history first
         st.session_state.messages.append({"role": "user", "content": prompt})
-        st.success(f"✅ Question added: '{prompt[:50]}{'...' if len(prompt) > 50 else ''}'")
 
         # Get relevant context using embeddings
-        with st.status("🔍 Searching embeddings and generating response...", expanded=True) as status:
+        with st.status("🔍 Searching embeddings and generating response...", expanded=False) as status:
             try:
-                st.write("🔄 Step 1: Searching for relevant context...")
                 # For embeddings, we don't need the source file - use empty string
                 context = get_context(prompt, "")
 
                 if context:
-                    st.write("✅ Step 2: Context found, generating response...")
                     # Add assistant response to chat history
                     response = get_chat_response(st.session_state.messages, context)
                     st.session_state.messages.append({"role": "assistant", "content": response})
-                    st.write(f"✅ Step 3: Response generated ({len(response)} characters)")
                     status.update(label="✅ Response Generated!", state="complete")
                 else:
-                    st.error("❌ Step 2: No context found - cannot generate response")
                     st.session_state.messages.append({"role": "assistant", "content": "I'm sorry, I couldn't find any relevant information in your documents to answer your question. Please make sure your documents have been processed (Extract → Chunk → Embed) and try again."})
                     status.update(label="❌ No Context Found", state="error")
 
@@ -1957,8 +1951,7 @@ with chat_input_container:
                 st.session_state.messages.append({"role": "assistant", "content": error_msg})
                 status.update(label="❌ Error Occurred", state="error")
 
-        # Show success message and rerun to update the chat display
-        st.success("🎉 Chat updated! Check the Chat tab to see the response.")
+        # Rerun to update the chat display
         st.rerun()
 
 # Create tabs for Chat and Database Management
@@ -1971,63 +1964,23 @@ with tab1:
 
     with chat_container:
         # Messages area - using Streamlit's native chat components for better layout
-        st.markdown("### 💬 Chat Messages")
-
         if st.session_state.messages:
-            st.success(f"💬 Chat History ({len(st.session_state.messages)} messages)")
-
-            for i, message in enumerate(st.session_state.messages):
+            for message in st.session_state.messages:
                 if message["role"] == "user":
                     with st.chat_message("user"):
-                        st.write(f"**You:** {message['content']}")
+                        st.write(message["content"])
                 else:
                     with st.chat_message("assistant"):
-                        st.write(f"**Assistant:** {message['content']}")
-
-                # Add a separator between messages
-                if i < len(st.session_state.messages) - 1:
-                    st.markdown("---")
-
-            # Show latest response prominently
-            if len(st.session_state.messages) >= 2:
-                latest_response = st.session_state.messages[-1]
-                if latest_response["role"] == "assistant":
-                    st.info(f"🤖 Latest Response: {latest_response['content'][:200]}{'...' if len(latest_response['content']) > 200 else ''}")
+                        st.write(message["content"])
         else:
             # Simple empty state without complex styling
             st.markdown("""
             <div style="text-align: center; padding: 2rem; color: #6c757d; background: rgba(102, 126, 234, 0.05); border-radius: 10px; border: 1px solid rgba(102, 126, 234, 0.1);">
                 <div style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.7;">💬</div>
                 <h3 style="font-size: 1.5rem; font-weight: 600; margin-bottom: 1rem; color: #667eea;">Start a conversation</h3>
-                <p style="font-size: 1rem; margin: 0 auto; line-height: 1.6; color: #6c757d;">Ask questions about your documents using the chat input below.</p>
+                <p style="font-size: 1rem; margin: 0 auto; line-height: 1.6; color: #6c757d;">Ask questions about your documents using the chat input above.</p>
             </div>
             """, unsafe_allow_html=True)
-
-        # Debug information for troubleshooting
-        with st.expander("🔧 Chat Debug Info", expanded=False):
-            st.write(f"**Messages in session state:** {len(st.session_state.messages)}")
-            if st.session_state.messages:
-                for i, msg in enumerate(st.session_state.messages):
-                    st.write(f"Message {i+1}: {msg['role']} - {msg['content'][:100]}{'...' if len(msg['content']) > 100 else ''}")
-
-            st.write(f"**API Keys Configured:** {st.session_state.api_keys_configured}")
-            st.write(f"**LLM Provider:** {llm_provider}")
-            st.write(f"**Embedding Provider:** {embedding_provider}")
-
-            # Check if we have documents and embeddings
-            documents = get_documents_from_db()
-            chunks = get_chunks_from_db()
-            embeddings = get_embeddings_from_db()
-
-            st.write(f"**Documents in DB:** {len(documents)}")
-            st.write(f"**Chunks in DB:** {len(chunks)}")
-            st.write(f"**Embeddings in DB:** {len(embeddings)}")
-
-            if not check_database_has_embeddings(embedding_provider):
-                st.error(f"❌ No embeddings found for provider: {embedding_provider}")
-                st.error("Please run the embedding process first!")
-            else:
-                st.success(f"✅ Embeddings found for provider: {embedding_provider}")
 
 # Tab 2: Database Management
 with tab2:
