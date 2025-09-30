@@ -1992,7 +1992,7 @@ st.markdown('<div class="main-header">📚 Document Q&A Assistant</div>', unsafe
 # Create tabs for Chat and Database Management
 tab1, tab2 = st.tabs(["💬 Chat", "🗃️ Database Management"])
 # Chat input section - placed after tabs
-st.markdown("### 💬 Ask Questions About Your Documents")
+
 
 # Tab 1: Chat Interface
 with tab1:
@@ -2019,34 +2019,6 @@ with tab1:
             </div>
             """, unsafe_allow_html=True)
 
-    # Chat input - moved inside the tab for proper state updates
-    if prompt := st.chat_input("💬 Ask a question about the document...", key="chat_input"):
-        # Add user message to chat history first
-        st.session_state.messages.append({"role": "user", "content": prompt})
-
-        # Get relevant context using embeddings
-        with st.status("🔍 Searching embeddings and generating response...", expanded=False) as status:
-            try:
-                # For embeddings, we don't need the source file - use empty string
-                context = get_context(prompt, "")
-
-                if context:
-                    # Add assistant response to chat history
-                    response = get_chat_response(st.session_state.messages, context)
-                    st.session_state.messages.append({"role": "assistant", "content": response})
-                    status.update(label="✅ Response Generated!", state="complete")
-                else:
-                    st.session_state.messages.append({"role": "assistant", "content": "I'm sorry, I couldn't find any relevant information in your documents to answer your question. Please make sure your documents have been processed (Extract → Chunk → Embed) and try again."})
-                    status.update(label="❌ No Context Found", state="error")
-
-            except Exception as e:
-                error_msg = f"I encountered an error while processing your question: {str(e)}"
-                st.error(f"❌ Error: {error_msg}")
-                st.session_state.messages.append({"role": "assistant", "content": error_msg})
-                status.update(label="❌ Error Occurred", state="error")
-
-        # Force a rerun to ensure the chat display updates
-        st.rerun()
 
 # Tab 2: Database Management
 with tab2:
@@ -2301,4 +2273,33 @@ with tab2:
                 st.warning(f"⚡ **{total_docs - processed_docs} documents** still need processing")
             else:
                 st.success("🎉 **All documents are fully processed** and ready for questions!")
+
+
+if prompt := st.chat_input("💬 Ask a question about the document...", key="chat_input"):
+    # Add user message to chat history first
+    st.session_state.messages.append({"role": "user", "content": prompt})
+
+    # Get relevant context using embeddings
+    with st.status("🔍 Searching embeddings and generating response...", expanded=False) as status:
+        try:
+            # For embeddings, we don't need the source file - use empty string
+            context = get_context(prompt, "")
+
+            if context:
+                # Add assistant response to chat history
+                response = get_chat_response(st.session_state.messages, context)
+                st.session_state.messages.append({"role": "assistant", "content": response})
+                status.update(label="✅ Response Generated!", state="complete")
+            else:
+                st.session_state.messages.append({"role": "assistant", "content": "I'm sorry, I couldn't find any relevant information in your documents to answer your question. Please make sure your documents have been processed (Extract → Chunk → Embed) and try again."})
+                status.update(label="❌ No Context Found", state="error")
+
+        except Exception as e:
+            error_msg = f"I encountered an error while processing your question: {str(e)}"
+            st.error(f"❌ Error: {error_msg}")
+            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+            status.update(label="❌ Error Occurred", state="error")
+
+    # Force a rerun to ensure the chat display updates
+    st.rerun()
 
