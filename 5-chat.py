@@ -153,8 +153,7 @@ def configure_api_keys():
                 else:
                     try:
                         test_openai_client = OpenAI(api_key=openai_key)
-                        # Test with a minimal request
-                        test_openai_client.models.list()
+                        # Store the client for later use
                         st.session_state.openai_client = test_openai_client
                         st.session_state.openai_model = openai_model
                     except Exception as e:
@@ -169,8 +168,7 @@ def configure_api_keys():
                 else:
                     try:
                         test_mistral_client = Mistral(api_key=mistral_key)
-                        # Test with a minimal request
-                        test_mistral_client.models.list()
+                        # Store the client for later use
                         st.session_state.mistral_client = test_mistral_client
                         st.session_state.mistral_model = mistral_model
                     except Exception as e:
