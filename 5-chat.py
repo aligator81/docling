@@ -1523,78 +1523,253 @@ with st.sidebar:
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-# Create tabs for different functionalities
-tab1, tab2 = st.tabs(["💬 Chat", "🗃️ Database Management"])
+# Main content area - Chat interface (default view)
+st.markdown('<div class="main-header">📚 Document Q&A Assistant</div>', unsafe_allow_html=True)
+
+# Messages area with scrolling
+st.markdown('<div class="chat-container">', unsafe_allow_html=True)
+st.markdown('<div class="chat-messages">', unsafe_allow_html=True)
+
+# Display all chat messages inside the container using custom styling
+if st.session_state.messages:
+    for message in st.session_state.messages:
+        if message["role"] == "user":
+            st.markdown(f"""
+            <div style="background: linear-gradient(145deg, #e3f2fd, #bbdefb);
+                        border-left: 4px solid #2196f3;
+                        border-radius: 15px;
+                        padding: 1rem;
+                        margin: 0.5rem 0;
+                        box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                <strong>👤 You:</strong><br>
+                {message["content"]}
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+            <div style="background: linear-gradient(145deg, #f3e5f5, #e1bee7);
+                        border-left: 4px solid #9c27b0;
+                        border-radius: 15px;
+                        padding: 1rem;
+                        margin: 0.5rem 0;
+                        box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                <strong>🤖 Assistant:</strong><br>
+                {message["content"]}
+            </div>
+            """, unsafe_allow_html=True)
+else:
+    # Show empty state when no messages
+    st.markdown("""
+    <div style="text-align: center; padding: 4rem; color: #6c757d; animation: fadeInUp 0.8s ease-out;">
+        <div style="font-size: 4rem; margin-bottom: 1rem; opacity: 0.7;">💬</div>
+        <h3 style="font-size: 1.8rem; font-weight: 600; margin-bottom: 1rem; background: linear-gradient(135deg, #667eea, #764ba2); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Start a conversation</h3>
+        <p style="font-size: 1.1rem; max-width: 600px; margin: 0 auto; line-height: 1.6;">Ask questions about your documents using the chat input below. I'll help you find relevant information from your uploaded files.</p>
+        <div style="margin-top: 2rem; padding: 1.5rem; background: rgba(102, 126, 234, 0.05); border-radius: 15px; border: 1px solid rgba(102, 126, 234, 0.1);">
+            <p style="margin: 0; font-size: 0.9rem; color: #667eea;"><strong>💡 Tip:</strong> Make sure your documents are processed (Extract → Chunk → Embed) before asking questions!</p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+st.markdown('</div>', unsafe_allow_html=True)  # Close chat-messages div
+st.markdown('</div>', unsafe_allow_html=True)  # Close chat-container div
+
+# Chat input at the bottom
+if prompt := st.chat_input("💬 Ask a question about the document..."):
+    # Add user message to chat history first
+    st.session_state.messages.append({"role": "user", "content": prompt})
+
+    # Get relevant context using embeddings
+    with st.status("🔍 Searching embeddings...", expanded=False) as status:
+        # For embeddings, we don't need the source file - use empty string
+        context = get_context(prompt, "")
+
+    # Add assistant response to chat history
+    response = get_chat_response(st.session_state.messages, context)
+    st.session_state.messages.append({"role": "assistant", "content": response})
+
+    # Rerun to update the chat display
+    st.rerun()
+
+# Create tabs for additional functionalities
+tab1, = st.tabs(["🗃️ Database Management"])
 
 with tab1:
-    # Main content area for chat
-    st.markdown('<div class="main-header">📚 Document Q&A Assistant</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header">🗃️ Database Management</div>', unsafe_allow_html=True)
 
-    # Messages area with scrolling
-    st.markdown('<div class="chat-container">', unsafe_allow_html=True)
-    st.markdown('<div class="chat-messages">', unsafe_allow_html=True)
+    # Create subtabs for documents, chunks, and embeddings
+    subtab1, subtab2, subtab3 = st.tabs(["📄 Documents", "🔪 Chunks", "🧬 Embeddings"])
 
-    # Display all chat messages inside the container using custom styling
-    if st.session_state.messages:
-        for message in st.session_state.messages:
-            if message["role"] == "user":
-                st.markdown(f"""
-                <div style="background: linear-gradient(145deg, #e3f2fd, #bbdefb);
-                            border-left: 4px solid #2196f3;
-                            border-radius: 15px;
-                            padding: 1rem;
-                            margin: 0.5rem 0;
-                            box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
-                    <strong>👤 You:</strong><br>
-                    {message["content"]}
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                st.markdown(f"""
-                <div style="background: linear-gradient(145deg, #f3e5f5, #e1bee7);
-                            border-left: 4px solid #9c27b0;
-                            border-radius: 15px;
-                            padding: 1rem;
-                            margin: 0.5rem 0;
-                            box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
-                    <strong>🤖 Assistant:</strong><br>
-                    {message["content"]}
-                </div>
-                """, unsafe_allow_html=True)
-    else:
-        # Show empty state when no messages
-        st.markdown("""
-        <div style="text-align: center; padding: 4rem; color: #6c757d; animation: fadeInUp 0.8s ease-out;">
-            <div style="font-size: 4rem; margin-bottom: 1rem; opacity: 0.7;">💬</div>
-            <h3 style="font-size: 1.8rem; font-weight: 600; margin-bottom: 1rem; background: linear-gradient(135deg, #667eea, #764ba2); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Start a conversation</h3>
-            <p style="font-size: 1.1rem; max-width: 600px; margin: 0 auto; line-height: 1.6;">Ask questions about your documents using the chat input below. I'll help you find relevant information from your uploaded files.</p>
-            <div style="margin-top: 2rem; padding: 1.5rem; background: rgba(102, 126, 234, 0.05); border-radius: 15px; border: 1px solid rgba(102, 126, 234, 0.1);">
-                <p style="margin: 0; font-size: 0.9rem; color: #667eea;"><strong>💡 Tip:</strong> Make sure your documents are processed (Extract → Chunk → Embed) before asking questions!</p>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+    with subtab1:
+        st.subheader("📄 Manage Documents")
+        st.markdown("View and manage documents stored in the database")
 
-    st.markdown('</div>', unsafe_allow_html=True)  # Close chat-messages div
-    st.markdown('</div>', unsafe_allow_html=True)  # Close chat-container div
+        if st.button("🔄 Refresh Documents List", key="refresh_docs"):
+            st.rerun()
 
-    # Chat input at the bottom
-    if prompt := st.chat_input("💬 Ask a question about the document..."):
-        # Add user message to chat history first
-        st.session_state.messages.append({"role": "user", "content": prompt})
+        documents = get_documents_from_db()
 
-        # Get relevant context using embeddings
-        with st.status("🔍 Searching embeddings...", expanded=False) as status:
-            # For embeddings, we don't need the source file - use empty string
-            context = get_context(prompt, "")
+        if documents:
+            st.success(f"✅ Found {len(documents)} documents in database")
 
-        # Add assistant response to chat history
-        response = get_chat_response(st.session_state.messages, context)
-        st.session_state.messages.append({"role": "assistant", "content": response})
+            for doc in documents:
+                with st.expander(f"📄 {doc['filename']} ({doc['file_type']})", expanded=False):
+                    col1, col2, col3 = st.columns([3, 1, 1])
 
-        # Rerun to update the chat display
-        st.rerun()
+                    with col1:
+                        st.write(f"**File Path:** {doc['file_path']}")
+                        st.write(f"**Size:** {doc['file_size']} bytes")
+                        st.write(f"**Uploaded:** {doc['upload_date']}")
+                        st.write(f"**Processed:** {'✅' if doc['processed'] else '❌'}")
+                        if doc['processing_date']:
+                            st.write(f"**Processing Date:** {doc['processing_date']}")
 
-# Database Management Tab
+                    with col2:
+                        if st.button("🗑️ Delete", key=f"delete_doc_{doc['id']}"):
+                            if delete_document_from_db(doc['id']):
+                                st.success(f"✅ Document '{doc['filename']}' deleted successfully!")
+                                st.rerun()
+                            else:
+                                st.error(f"❌ Failed to delete document '{doc['filename']}'")
+
+                    with col3:
+                        if st.button("📊 View Details", key=f"view_doc_{doc['id']}"):
+                            # Count related chunks
+                            conn = get_db_connection()
+                            if conn:
+                                try:
+                                    with conn.cursor() as cur:
+                                        cur.execute("SELECT COUNT(*) FROM document_chunks WHERE document_id = %s", (doc['id'],))
+                                        chunk_count = cur.fetchone()[0]
+                                        cur.execute("SELECT COUNT(*) FROM embeddings WHERE chunk_id IN (SELECT id FROM document_chunks WHERE document_id = %s)", (doc['id'],))
+                                        embedding_count = cur.fetchone()[0]
+                                        st.info(f"**Related Data:** {chunk_count} chunks, {embedding_count} embeddings")
+                                except Exception as e:
+                                    st.error(f"Error counting related data: {e}")
+                                finally:
+                                    conn.close()
+        else:
+            st.info("📝 No documents found in the database")
+
+    with subtab2:
+        st.subheader("🔪 Manage Chunks")
+        st.markdown("View and manage document chunks stored in the database")
+
+        if st.button("🔄 Refresh Chunks List", key="refresh_chunks"):
+            st.rerun()
+
+        chunks = get_chunks_from_db()
+
+        if chunks:
+            st.success(f"✅ Found {len(chunks)} chunks in database")
+
+            # Group chunks by filename for better organization
+            chunks_by_file = {}
+            for chunk in chunks:
+                filename = chunk['filename']
+                if filename not in chunks_by_file:
+                    chunks_by_file[filename] = []
+                chunks_by_file[filename].append(chunk)
+
+            for filename, file_chunks in chunks_by_file.items():
+                with st.expander(f"📄 {filename} ({len(file_chunks)} chunks)", expanded=False):
+                    for chunk in file_chunks:
+                        col1, col2, col3 = st.columns([3, 1, 1])
+
+                        with col1:
+                            st.write(f"**Chunk #{chunk['chunk_index']}**")
+                            if chunk['section_title']:
+                                st.write(f"**Section:** {chunk['section_title']}")
+                            if chunk['page_numbers']:
+                                st.write(f"**Pages:** {chunk['page_numbers']}")
+                            st.write(f"**Type:** {chunk['chunk_type']}")
+                            st.write(f"**Tokens:** {chunk['token_count']}")
+                            st.write(f"**Created:** {chunk['created_at']}")
+
+                            # Show preview of chunk text
+                            preview_text = chunk['chunk_text'][:200] + "..." if len(chunk['chunk_text']) > 200 else chunk['chunk_text']
+                            if st.button("👁️ Preview Text", key=f"preview_{chunk['id']}"):
+                                st.text_area("Preview Content", preview_text, height=100, disabled=True)
+
+                        with col2:
+                            if st.button("🗑️ Delete", key=f"delete_chunk_{chunk['id']}"):
+                                if delete_chunk_from_db(chunk['id']):
+                                    st.success(f"✅ Chunk #{chunk['chunk_index']} deleted successfully!")
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ Failed to delete chunk #{chunk['chunk_index']}")
+
+                        with col3:
+                            if st.button("📊 View Details", key=f"view_chunk_{chunk['id']}"):
+                                # Count related embeddings
+                                conn = get_db_connection()
+                                if conn:
+                                    try:
+                                        with conn.cursor() as cur:
+                                            cur.execute("SELECT COUNT(*) FROM embeddings WHERE chunk_id = %s", (chunk['id'],))
+                                            embedding_count = cur.fetchone()[0]
+                                            st.info(f"**Related Embeddings:** {embedding_count}")
+                                    except Exception as e:
+                                        st.error(f"Error counting embeddings: {e}")
+                                    finally:
+                                        conn.close()
+
+                        st.markdown("---")
+        else:
+            st.info("🔪 No chunks found in the database")
+
+    with subtab3:
+        st.subheader("🧬 Manage Embeddings")
+        st.markdown("View and manage embeddings stored in the database")
+
+        if st.button("🔄 Refresh Embeddings List", key="refresh_embeddings"):
+            st.rerun()
+
+        embeddings = get_embeddings_from_db()
+
+        if embeddings:
+            st.success(f"✅ Found {len(embeddings)} embeddings in database")
+
+            # Group embeddings by provider for better organization
+            embeddings_by_provider = {}
+            for embedding in embeddings:
+                provider = embedding['embedding_provider']
+                if provider not in embeddings_by_provider:
+                    embeddings_by_provider[provider] = []
+                embeddings_by_provider[provider].append(embedding)
+
+            for provider, provider_embeddings in embeddings_by_provider.items():
+                with st.expander(f"🧬 {provider.upper()} Embeddings ({len(provider_embeddings)} entries)", expanded=False):
+                    for embedding in provider_embeddings:
+                        col1, col2, col3 = st.columns([3, 1, 1])
+
+                        with col1:
+                            st.write(f"**Filename:** {embedding['filename']}")
+                            if embedding['original_filename']:
+                                st.write(f"**Original:** {embedding['original_filename']}")
+                            if embedding['title']:
+                                st.write(f"**Title:** {embedding['title']}")
+                            if embedding['page_numbers']:
+                                st.write(f"**Pages:** {embedding['page_numbers']}")
+                            st.write(f"**Model:** {embedding['embedding_model']}")
+                            st.write(f"**Created:** {embedding['created_at']}")
+
+                        with col2:
+                            if st.button("🗑️ Delete", key=f"delete_embedding_{embedding['id']}"):
+                                if delete_embedding_from_db(embedding['id']):
+                                    st.success(f"✅ Embedding deleted successfully!")
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ Failed to delete embedding")
+
+                        with col3:
+                            if st.button("📊 View Details", key=f"view_embedding_{embedding['id']}"):
+                                st.info(f"**Embedding ID:** {embedding['id']}")
+                                st.info(f"**Provider:** {embedding['embedding_provider']}")
+                                st.info(f"**Model:** {embedding['embedding_model']}")
+
+                        st.markdown("---")
+        else:
+            st.info("🧬 No embeddings found in the database")
 
 with tab1:
     st.markdown('<div class="main-header">🗃️ Database Management</div>', unsafe_allow_html=True)
