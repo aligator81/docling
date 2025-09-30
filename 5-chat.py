@@ -43,10 +43,12 @@ if "embedding_provider" not in st.session_state:
     st.session_state.embedding_provider = "openai"
 if "extraction_provider" not in st.session_state:
     st.session_state.extraction_provider = "docling"
+if "auto_config_attempted" not in st.session_state:
+    st.session_state.auto_config_attempted = False
 # Initialize session state for uploaded documents
 if "uploaded_documents" not in st.session_state:
     st.session_state.uploaded_documents = []
-    
+
     # Auto-reload uploaded documents from disk
     uploads_dir = "data/uploads"
     if os.path.exists(uploads_dir):
@@ -65,6 +67,71 @@ if "uploaded_documents" not in st.session_state:
                     st.session_state.uploaded_documents.append(doc_info)
                 except Exception as e:
                     st.error(f"Error loading file {filename}: {e}")
+
+def auto_configure_api_keys():
+    """Auto-configure API keys if environment variables are set"""
+    if st.session_state.api_keys_configured:
+        return True  # Already configured
+
+    openai_key = os.getenv("OPENAI_API_KEY")
+    mistral_key = os.getenv("MISTRAL_API_KEY")
+    embedding_provider = os.getenv("EMBEDDING_PROVIDER", "openai")
+
+    # Determine LLM provider based on available keys
+    if openai_key and mistral_key:
+        llm_provider = "openai"  # Default to OpenAI if both available
+    elif openai_key:
+        llm_provider = "openai"
+    elif mistral_key:
+        llm_provider = "mistral"
+    else:
+        return False  # No keys available
+
+    success = True
+    error_messages = []
+
+    # Validate OpenAI configuration if needed
+    if llm_provider == "openai" or embedding_provider == "openai":
+        if not openai_key:
+            error_messages.append("OpenAI API key is required for selected configuration")
+            success = False
+        else:
+            try:
+                test_openai_client = OpenAI(api_key=openai_key)
+                st.session_state.openai_client = test_openai_client
+                st.session_state.openai_model = "gpt-4o-mini"  # Default model
+            except Exception as e:
+                error_messages.append(f"OpenAI API key validation failed: {str(e)}")
+                success = False
+
+    # Validate Mistral configuration if needed
+    if llm_provider == "mistral" or embedding_provider == "mistral":
+        if not mistral_key:
+            error_messages.append("Mistral API key is required for selected configuration")
+            success = False
+        else:
+            try:
+                test_mistral_client = Mistral(api_key=mistral_key)
+                st.session_state.mistral_client = test_mistral_client
+                st.session_state.mistral_model = "mistral-large-latest"  # Default model
+            except Exception as e:
+                error_messages.append(f"Mistral API key validation failed: {str(e)}")
+                success = False
+
+    if success:
+        st.session_state.llm_provider = llm_provider
+        st.session_state.embedding_provider = embedding_provider
+        st.session_state.extraction_provider = "docling"  # Default
+        st.session_state.api_keys_configured = True
+        return True
+    else:
+        # Don't show errors on auto-configure, just return False
+        return False
+
+# Try to auto-configure API keys on startup (only once per session)
+if not st.session_state.auto_config_attempted:
+    auto_configure_api_keys()
+    st.session_state.auto_config_attempted = True
 
 def configure_api_keys():
     """Display API key configuration interface"""
@@ -1952,33 +2019,34 @@ with tab1:
             </div>
             """, unsafe_allow_html=True)
 
+    # Chat input - moved inside the tab for proper state updates
+    if prompt := st.chat_input("💬 Ask a question about the document...", key="chat_input"):
+        # Add user message to chat history first
+        st.session_state.messages.append({"role": "user", "content": prompt})
 
-if prompt := st.chat_input("💬 Ask a question about the document...", key="chat_input"):
-    # Add user message to chat history first
-    st.session_state.messages.append({"role": "user", "content": prompt})
+        # Get relevant context using embeddings
+        with st.status("🔍 Searching embeddings and generating response...", expanded=False) as status:
+            try:
+                # For embeddings, we don't need the source file - use empty string
+                context = get_context(prompt, "")
 
-    # Get relevant context using embeddings
-    with st.status("🔍 Searching embeddings and generating response...", expanded=False) as status:
-        try:
-            # For embeddings, we don't need the source file - use empty string
-            context = get_context(prompt, "")
+                if context:
+                    # Add assistant response to chat history
+                    response = get_chat_response(st.session_state.messages, context)
+                    st.session_state.messages.append({"role": "assistant", "content": response})
+                    status.update(label="✅ Response Generated!", state="complete")
+                else:
+                    st.session_state.messages.append({"role": "assistant", "content": "I'm sorry, I couldn't find any relevant information in your documents to answer your question. Please make sure your documents have been processed (Extract → Chunk → Embed) and try again."})
+                    status.update(label="❌ No Context Found", state="error")
 
-            if context:
-                # Add assistant response to chat history
-                response = get_chat_response(st.session_state.messages, context)
-                st.session_state.messages.append({"role": "assistant", "content": response})
-                status.update(label="✅ Response Generated!", state="complete")
-            else:
-                st.session_state.messages.append({"role": "assistant", "content": "I'm sorry, I couldn't find any relevant information in your documents to answer your question. Please make sure your documents have been processed (Extract → Chunk → Embed) and try again."})
-                status.update(label="❌ No Context Found", state="error")
+            except Exception as e:
+                error_msg = f"I encountered an error while processing your question: {str(e)}"
+                st.error(f"❌ Error: {error_msg}")
+                st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                status.update(label="❌ Error Occurred", state="error")
 
-        except Exception as e:
-            error_msg = f"I encountered an error while processing your question: {str(e)}"
-            st.error(f"❌ Error: {error_msg}")
-            st.session_state.messages.append({"role": "assistant", "content": error_msg})
-            status.update(label="❌ Error Occurred", state="error")
-
-    # Chat display will update automatically without rerun()
+        # Force a rerun to ensure the chat display updates
+        st.rerun()
 
 # Tab 2: Database Management
 with tab2:
