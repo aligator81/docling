@@ -1922,40 +1922,10 @@ with st.sidebar:
 # Main content area with tabs
 st.markdown('<div class="main-header">📚 Document Q&A Assistant</div>', unsafe_allow_html=True)
 
-# Chat input - placed above tabs so responses appear above input
-st.markdown("### 💬 Ask Questions About Your Documents")
-chat_input_container = st.container()
-with chat_input_container:
-    if prompt := st.chat_input("💬 Ask a question about the document...", key="chat_input"):
-        # Add user message to chat history first
-        st.session_state.messages.append({"role": "user", "content": prompt})
-
-        # Get relevant context using embeddings
-        with st.status("🔍 Searching embeddings and generating response...", expanded=False) as status:
-            try:
-                # For embeddings, we don't need the source file - use empty string
-                context = get_context(prompt, "")
-
-                if context:
-                    # Add assistant response to chat history
-                    response = get_chat_response(st.session_state.messages, context)
-                    st.session_state.messages.append({"role": "assistant", "content": response})
-                    status.update(label="✅ Response Generated!", state="complete")
-                else:
-                    st.session_state.messages.append({"role": "assistant", "content": "I'm sorry, I couldn't find any relevant information in your documents to answer your question. Please make sure your documents have been processed (Extract → Chunk → Embed) and try again."})
-                    status.update(label="❌ No Context Found", state="error")
-
-            except Exception as e:
-                error_msg = f"I encountered an error while processing your question: {str(e)}"
-                st.error(f"❌ Error: {error_msg}")
-                st.session_state.messages.append({"role": "assistant", "content": error_msg})
-                status.update(label="❌ Error Occurred", state="error")
-
-        # Rerun to update the chat display
-        st.rerun()
-
 # Create tabs for Chat and Database Management
 tab1, tab2 = st.tabs(["💬 Chat", "🗃️ Database Management"])
+# Chat input section - placed after tabs
+st.markdown("### 💬 Ask Questions About Your Documents")
 
 # Tab 1: Chat Interface
 with tab1:
@@ -1978,9 +1948,38 @@ with tab1:
             <div style="text-align: center; padding: 2rem; color: #6c757d; background: rgba(102, 126, 234, 0.05); border-radius: 10px; border: 1px solid rgba(102, 126, 234, 0.1);">
                 <div style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.7;">💬</div>
                 <h3 style="font-size: 1.5rem; font-weight: 600; margin-bottom: 1rem; color: #667eea;">Start a conversation</h3>
-                <p style="font-size: 1rem; margin: 0 auto; line-height: 1.6; color: #6c757d;">Ask questions about your documents using the chat input above.</p>
+                <p style="font-size: 1rem; margin: 0 auto; line-height: 1.6; color: #6c757d;">Ask questions about your documents using the chat input below.</p>
             </div>
             """, unsafe_allow_html=True)
+
+
+if prompt := st.chat_input("💬 Ask a question about the document...", key="chat_input"):
+    # Add user message to chat history first
+    st.session_state.messages.append({"role": "user", "content": prompt})
+
+    # Get relevant context using embeddings
+    with st.status("🔍 Searching embeddings and generating response...", expanded=False) as status:
+        try:
+            # For embeddings, we don't need the source file - use empty string
+            context = get_context(prompt, "")
+
+            if context:
+                # Add assistant response to chat history
+                response = get_chat_response(st.session_state.messages, context)
+                st.session_state.messages.append({"role": "assistant", "content": response})
+                status.update(label="✅ Response Generated!", state="complete")
+            else:
+                st.session_state.messages.append({"role": "assistant", "content": "I'm sorry, I couldn't find any relevant information in your documents to answer your question. Please make sure your documents have been processed (Extract → Chunk → Embed) and try again."})
+                status.update(label="❌ No Context Found", state="error")
+
+        except Exception as e:
+            error_msg = f"I encountered an error while processing your question: {str(e)}"
+            st.error(f"❌ Error: {error_msg}")
+            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+            status.update(label="❌ Error Occurred", state="error")
+
+    # Rerun to update the chat display
+    st.rerun()
 
 # Tab 2: Database Management
 with tab2:
