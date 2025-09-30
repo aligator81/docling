@@ -1257,75 +1257,74 @@ with st.sidebar:
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-# Create tabs for different functionalities
-tab1, tab2 = st.tabs(["💬 Chat", "🗃️ Database Management"])
+# Main content area for chat (moved outside tabs)
+st.markdown('<div class="main-header">📚 Document Q&A Assistant</div>', unsafe_allow_html=True)
+
+
+
+# Messages area with scrolling
+st.markdown('<div class="chat-messages">', unsafe_allow_html=True)
+
+# Display all chat messages inside the container using custom styling
+if st.session_state.messages:
+    for message in st.session_state.messages:
+        if message["role"] == "user":
+            st.markdown(f"""
+            <div style="background: linear-gradient(145deg, #e3f2fd, #bbdefb);
+                        border-left: 4px solid #2196f3;
+                        border-radius: 15px;
+                        padding: 1rem;
+                        margin: 0.5rem 0;
+                        box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                <strong>👤 You:</strong><br>
+                {message["content"]}
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+            <div style="background: linear-gradient(145deg, #f3e5f5, #e1bee7);
+                        border-left: 4px solid #9c27b0;
+                        border-radius: 15px;
+                        padding: 1rem;
+                        margin: 0.5rem 0;
+                        box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                <strong>🤖 Assistant:</strong><br>
+                {message["content"]}
+            </div>
+            """, unsafe_allow_html=True)
+else:
+    # Show empty state when no messages
+    st.markdown("""
+    <div style="text-align: center; padding: 3rem; color: #6c757d;">
+        <h3>💬 Start a conversation</h3>
+        <p>Ask questions about your documents using the chat input below.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+st.markdown('</div>', unsafe_allow_html=True)  # Close chat-messages div
+st.markdown('</div>', unsafe_allow_html=True)  # Close chat-container div
+
+# Chat input at the bottom (outside the container but properly positioned)
+if prompt := st.chat_input("💬 Ask a question about the document..."):
+    # Add user message to chat history first
+    st.session_state.messages.append({"role": "user", "content": prompt})
+
+    # Get relevant context using embeddings
+    with st.status("🔍 Searching embeddings...", expanded=False) as status:
+        # For embeddings, we don't need the source file - use empty string
+        context = get_context(prompt, "")
+
+    # Add assistant response to chat history
+    response = get_chat_response(st.session_state.messages, context)
+    st.session_state.messages.append({"role": "assistant", "content": response})
+
+    # Rerun to update the chat display
+    st.rerun()
+
+# Create tabs for different functionalities (Database Management only)
+tab1, = st.tabs(["🗃️ Database Management"])
 
 with tab1:
-    # Main content area for chat
-    st.markdown('<div class="main-header">📚 Document Q&A Assistant</div>', unsafe_allow_html=True)
-    
-
-    
-    # Messages area with scrolling
-    st.markdown('<div class="chat-messages">', unsafe_allow_html=True)
-    
-    # Display all chat messages inside the container using custom styling
-    if st.session_state.messages:
-        for message in st.session_state.messages:
-            if message["role"] == "user":
-                st.markdown(f"""
-                <div style="background: linear-gradient(145deg, #e3f2fd, #bbdefb);
-                            border-left: 4px solid #2196f3;
-                            border-radius: 15px;
-                            padding: 1rem;
-                            margin: 0.5rem 0;
-                            box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
-                    <strong>👤 You:</strong><br>
-                    {message["content"]}
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                st.markdown(f"""
-                <div style="background: linear-gradient(145deg, #f3e5f5, #e1bee7);
-                            border-left: 4px solid #9c27b0;
-                            border-radius: 15px;
-                            padding: 1rem;
-                            margin: 0.5rem 0;
-                            box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
-                    <strong>🤖 Assistant:</strong><br>
-                    {message["content"]}
-                </div>
-                """, unsafe_allow_html=True)
-    else:
-        # Show empty state when no messages
-        st.markdown("""
-        <div style="text-align: center; padding: 3rem; color: #6c757d;">
-            <h3>💬 Start a conversation</h3>
-            <p>Ask questions about your documents using the chat input below.</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    st.markdown('</div>', unsafe_allow_html=True)  # Close chat-messages div
-    st.markdown('</div>', unsafe_allow_html=True)  # Close chat-container div
-    
-    # Chat input at the bottom (outside the container but properly positioned)
-    if prompt := st.chat_input("💬 Ask a question about the document..."):
-        # Add user message to chat history first
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        
-        # Get relevant context using embeddings
-        with st.status("🔍 Searching embeddings...", expanded=False) as status:
-            # For embeddings, we don't need the source file - use empty string
-            context = get_context(prompt, "")
-
-        # Add assistant response to chat history
-        response = get_chat_response(st.session_state.messages, context)
-        st.session_state.messages.append({"role": "assistant", "content": response})
-        
-        # Rerun to update the chat display
-        st.rerun()
-
-with tab2:
     st.markdown('<div class="main-header">🗃️ Database Management</div>', unsafe_allow_html=True)
     
     # Create subtabs for documents, chunks, and embeddings
