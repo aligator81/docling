@@ -226,65 +226,99 @@ def get_db_connection():
     except Exception as e:
         st.error(f"❌ Database connection failed: {e}")
         st.error(f"Connection string: {NEON_CONNECTION_STRING[:50]}...")
+        st.error("Please check:")
+        st.error("• NEON_CONNECTION_STRING is set correctly in your .env file")
+        st.error("• Your Neon database is running and accessible")
+        st.error("• Your IP is whitelisted in Neon if required")
         return None
 
 def search_embeddings_neon(query, top_k=3):
     """Search through embeddings stored in Neon database"""
-    conn = get_db_connection()
-    if not conn:
-        st.error("Failed to connect to database")
-        return []
-    
     try:
-        # Get embedding for query
-        query_embedding = get_embedding(query)
-        query_embedding_array = np.array(query_embedding).astype('float32')
-        
-        # Use vector similarity search
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT
-                    id, text, filename, original_filename, page_numbers, title,
-                    embedding_vector, embedding_provider, embedding_model,
-                    1 - (embedding_vector <=> %s::vector) as similarity
-                FROM embeddings
-                WHERE embedding_provider = %s
-                ORDER BY embedding_vector <=> %s::vector
-                LIMIT %s
-            """, (query_embedding_array.tolist(), embedding_provider, query_embedding_array.tolist(), top_k))
-            
-            results = []
-            for row in cur.fetchall():
-                result = {
-                    "id": row[0],
-                    "text": row[1],
-                    "filename": row[2],
-                    "original_filename": row[3],
-                    "page_numbers": row[4],
-                    "title": row[5],
-                    "embedding": row[6],
-                    "embedding_provider": row[7],
-                    "embedding_model": row[8],
-                    "similarity": float(row[9])
-                }
-                results.append((result["similarity"], result))
-            
-            return results
-            
+        # Check if API keys are configured
+        if not st.session_state.api_keys_configured:
+            st.error("❌ API keys not configured. Please configure API keys in the sidebar first.")
+            return []
+
+        conn = get_db_connection()
+        if not conn:
+            st.error("❌ Failed to connect to database")
+            return []
+
+        try:
+            # Get embedding for query with timeout
+            st.write(f"🔄 Generating embedding for query using {embedding_provider}...")
+            query_embedding = get_embedding(query)
+            query_embedding_array = np.array(query_embedding).astype('float32')
+            st.write(f"✅ Generated query embedding ({len(query_embedding)} dimensions)")
+
+            # Use vector similarity search
+            st.write(f"🔍 Searching database for similar embeddings...")
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        id, text, filename, original_filename, page_numbers, title,
+                        embedding_vector, embedding_provider, embedding_model,
+                        1 - (embedding_vector <=> %s::vector) as similarity
+                    FROM embeddings
+                    WHERE embedding_provider = %s
+                    ORDER BY embedding_vector <=> %s::vector
+                    LIMIT %s
+                """, (query_embedding_array.tolist(), embedding_provider, query_embedding_array.tolist(), top_k))
+
+                results = []
+                rows = cur.fetchall()
+                st.write(f"📊 Found {len(rows)} potential matches in database")
+
+                for row in rows:
+                    result = {
+                        "id": row[0],
+                        "text": row[1],
+                        "filename": row[2],
+                        "original_filename": row[3],
+                        "page_numbers": row[4],
+                        "title": row[5],
+                        "embedding": row[6],
+                        "embedding_provider": row[7],
+                        "embedding_model": row[8],
+                        "similarity": float(row[9])
+                    }
+                    results.append((result["similarity"], result))
+
+                st.write(f"✅ Search completed, returning {len(results)} results")
+                return results
+
+        except Exception as e:
+            st.error(f"❌ Error searching embeddings: {e}")
+            import traceback
+            st.error(f"Traceback: {traceback.format_exc()}")
+            return []
+        finally:
+            conn.close()
+
     except Exception as e:
-        st.error(f"Error searching embeddings: {e}")
+        st.error(f"❌ Unexpected error in search_embeddings_neon: {e}")
         return []
-    finally:
-        conn.close()
 
 def check_database_has_embeddings(provider):
     """Check if database has embeddings for the specified provider"""
     conn = get_db_connection()
     if not conn:
         return False
-    
+
     try:
         with conn.cursor() as cur:
+            # First check if pgvector extension is available
+            try:
+                cur.execute("SELECT * FROM pg_extension WHERE extname = 'vector'")
+                if not cur.fetchone():
+                    st.error("❌ pgvector extension not found in database!")
+                    st.error("Please enable the pgvector extension in your Neon database.")
+                    st.error("You can do this by running: CREATE EXTENSION vector;")
+                    return False
+            except Exception as e:
+                st.warning(f"⚠️ Could not check for pgvector extension: {e}")
+
             cur.execute("SELECT COUNT(*) FROM embeddings WHERE embedding_provider = %s", (provider,))
             count = cur.fetchone()[0]
             return count > 0
@@ -983,13 +1017,19 @@ def run_embedding():
 def get_embedding(text):
     """Get embedding for text using configured provider"""
     if embedding_provider == "openai":
-        response = openai_client.embeddings.create(
+        client = st.session_state.openai_client
+        if not client:
+            raise ValueError("OpenAI client not configured")
+        response = client.embeddings.create(
             model="text-embedding-3-large",
             input=text
         )
         return response.data[0].embedding
     elif embedding_provider == "mistral":
-        response = mistral_client.embeddings.create(
+        client = st.session_state.mistral_client
+        if not client:
+            raise ValueError("Mistral client not configured")
+        response = client.embeddings.create(
             model="mistral-embed",
             inputs=[text]
         )
@@ -1021,9 +1061,17 @@ def get_context(query: str, source_file: str) -> str:
         str: Relevant context from Neon database embeddings
     """
     try:
+        st.write(f"🔍 Searching for context related to: '{query}'")
+
+        # Check if embeddings exist in database first
+        if not check_database_has_embeddings(embedding_provider):
+            st.error(f"❌ No embeddings found in database for provider '{embedding_provider}'")
+            st.error("Please run the embedding process first using the sidebar: Extract → Chunk → Embed")
+            return ""
+
         # Use ONLY Neon database for semantic search
         results = search_embeddings(query, top_k=3)
-        
+
         if results:
             # Build context from top results
             context_parts = []
@@ -1031,16 +1079,22 @@ def get_context(query: str, source_file: str) -> str:
                 context_parts.append(f"Relevant section {i} (similarity: {score:.3f}):")
                 context_parts.append(result["text"])
                 context_parts.append("---")
-            
+
             context = "\n".join(context_parts)
             st.success(f"✅ Found {len(results)} relevant sections using Neon database embeddings")
             return context
         else:
-            st.error("❌ No relevant embeddings found in Neon database for your query.")
+            st.warning("⚠️ No relevant embeddings found in Neon database for your query.")
+            st.info("This could be because:")
+            st.info("• No documents have been processed yet")
+            st.info("• The query doesn't match any content in your documents")
+            st.info("• Embeddings haven't been generated for the current provider")
             return ""
-            
+
     except Exception as e:
-        st.error(f"Error retrieving context from Neon database: {str(e)}")
+        st.error(f"❌ Error retrieving context from Neon database: {str(e)}")
+        import traceback
+        st.error(f"Full traceback: {traceback.format_exc()}")
         return ""
 
 
