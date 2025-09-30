@@ -1978,8 +1978,7 @@ if prompt := st.chat_input("💬 Ask a question about the document...", key="cha
             st.session_state.messages.append({"role": "assistant", "content": error_msg})
             status.update(label="❌ Error Occurred", state="error")
 
-    # Rerun to update the chat display
-    st.rerun()
+    # Chat display will update automatically without rerun()
 
 # Tab 2: Database Management
 with tab2:
