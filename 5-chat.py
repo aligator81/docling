@@ -313,14 +313,11 @@ def search_embeddings_neon(query, top_k=3):
             return []
 
         try:
-            # Get embedding for query with timeout
-            st.write(f"🔄 Generating embedding for query using {embedding_provider}...")
+            # Get embedding for query with minimal logging
             query_embedding = get_embedding(query)
             query_embedding_array = np.array(query_embedding).astype('float32')
-            st.write(f"✅ Generated query embedding ({len(query_embedding)} dimensions)")
 
             # Use vector similarity search
-            st.write(f"🔍 Searching database for similar embeddings...")
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT
@@ -335,7 +332,6 @@ def search_embeddings_neon(query, top_k=3):
 
                 results = []
                 rows = cur.fetchall()
-                st.write(f"📊 Found {len(rows)} potential matches in database")
 
                 for row in rows:
                     result = {
@@ -352,7 +348,6 @@ def search_embeddings_neon(query, top_k=3):
                     }
                     results.append((result["similarity"], result))
 
-                st.write(f"✅ Search completed, returning {len(results)} results")
                 return results
 
         except Exception as e:
@@ -1128,8 +1123,6 @@ def get_context(query: str, source_file: str) -> str:
         str: Relevant context from Neon database embeddings
     """
     try:
-        st.write(f"🔍 Searching for context related to: '{query}'")
-
         # Check if embeddings exist in database first
         if not check_database_has_embeddings(embedding_provider):
             st.error(f"❌ No embeddings found in database for provider '{embedding_provider}'")
@@ -1148,7 +1141,6 @@ def get_context(query: str, source_file: str) -> str:
                 context_parts.append("---")
 
             context = "\n".join(context_parts)
-            st.success(f"✅ Found {len(results)} relevant sections using Neon database embeddings")
             return context
         else:
             st.warning("⚠️ No relevant embeddings found in Neon database for your query.")
