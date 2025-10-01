@@ -16,6 +16,11 @@ import tempfile
 import psycopg2
 from psycopg2.extras import Json
 
+# Import authentication modules
+from auth_utils import authenticate_user, is_admin, get_db_connection
+from login_page import show_authentication_page
+from user_management import show_user_management, show_current_user_info
+
 # Load environment variables
 load_dotenv()
 
@@ -30,7 +35,24 @@ if not NEON_CONNECTION_STRING:
     st.error(f"Current value: {os.getenv('NEON_CONNECTION_STRING', 'NOT SET')}")
     st.stop()
 
-# Initialize session state for API keys and settings
+# Authentication check - this runs first after environment validation
+if not st.session_state.get("is_authenticated", False):
+    show_authentication_page()
+    st.stop()
+
+# Initialize session state for authentication
+if "is_authenticated" not in st.session_state:
+    st.session_state.is_authenticated = False
+if "user_id" not in st.session_state:
+    st.session_state.user_id = None
+if "username" not in st.session_state:
+    st.session_state.username = None
+if "user_role" not in st.session_state:
+    st.session_state.user_role = None
+if "user_email" not in st.session_state:
+    st.session_state.user_email = None
+
+# Initialize session state for API keys and settings (admin only)
 if "api_keys_configured" not in st.session_state:
     st.session_state.api_keys_configured = False
 if "openai_client" not in st.session_state:
@@ -45,9 +67,14 @@ if "extraction_provider" not in st.session_state:
     st.session_state.extraction_provider = "docling"
 if "auto_config_attempted" not in st.session_state:
     st.session_state.auto_config_attempted = False
+
 # Initialize session state for uploaded documents
 if "uploaded_documents" not in st.session_state:
     st.session_state.uploaded_documents = []
+
+# Initialize session state for chat messages
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
     # Auto-reload uploaded documents from disk
     uploads_dir = "data/uploads"
@@ -134,9 +161,15 @@ if not st.session_state.auto_config_attempted:
     st.session_state.auto_config_attempted = True
 
 def configure_api_keys():
-    """Display API key configuration interface"""
+    """Display API key configuration interface (Admin only)"""
+    # Check if user is admin
+    if not is_admin({"role": st.session_state.get("user_role")}):
+        st.error("❌ Access denied. Admin privileges required for API configuration.")
+        st.info("💡 Contact your system administrator to configure API keys.")
+        return False
+
     st.markdown("### 🔑 API Configuration")
-    st.markdown("Please configure your API keys to get started:")
+    st.markdown("Configure your API keys to enable the Document Q&A Assistant:")
     
     # LLM Provider selection
     provider_choice = st.selectbox(
@@ -257,23 +290,25 @@ def configure_api_keys():
         except Exception as e:
             st.error(f"❌ Configuration failed: {str(e)}")
 
+# Check if API keys are configured (admin requirement)
 if not st.session_state.api_keys_configured:
-    st.set_page_config(
-        page_title="🔑 API Configuration",
-        page_icon="🔑",
-        layout="wide"
-    )
-    
-    st.title("🔑 LLM API Configuration")
-    st.markdown("Welcome! Please configure your API keys to get started with the Document Q&A Assistant.")
-    
-    configure_api_keys()
-    st.stop()
+    # Only admins need to configure API keys
+    if is_admin({"role": st.session_state.get("user_role")}):
+        st.set_page_config(
+            page_title="🔑 API Configuration",
+            page_icon="🔑",
+            layout="wide"
+        )
 
-# Check if API keys are configured
-if not st.session_state.api_keys_configured:
-    st.warning("⚠️ Please configure your API keys in the sidebar to use the application.")
-    st.stop()
+        st.title("🔑 LLM API Configuration")
+        st.markdown("Welcome! Please configure your API keys to get started with the Document Q&A Assistant.")
+
+        configure_api_keys()
+        st.stop()
+    else:
+        # Regular users don't need API configuration
+        st.info("🔧 System is being configured by an administrator. Please wait...")
+        st.stop()
 
 # Get the configured clients and settings
 openai_client = st.session_state.openai_client
@@ -1636,10 +1671,9 @@ st.markdown("""
     }
     </style>
 """, unsafe_allow_html=True)
-# Sidebar for document processing
-with st.sidebar:
-    st.markdown('<div class="sidebar-header">📄 Document Processing</div>', unsafe_allow_html=True)
-    
+def show_document_processing_sidebar():
+    """Show document processing sidebar content"""
+
     # Upload section
     st.markdown('<div class="upload-section">', unsafe_allow_html=True)
     st.subheader("📁 Upload Document")
@@ -1649,7 +1683,7 @@ with st.sidebar:
         help="Upload a document for processing (PDF, DOCX, XLSX, PPTX, Markdown, HTML, Images)",
         label_visibility="collapsed"
     )
-    
+
     # Add upload button
     if uploaded_file is not None:
         if st.button("📤 Add to Uploaded Documents", use_container_width=True):
@@ -1659,7 +1693,7 @@ with st.sidebar:
                 st.rerun()
             else:
                 st.warning("⚠️ File already uploaded")
-    
+
     st.subheader("🔗 Or enter URL")
     url = st.text_input(
         "Document URL",
@@ -1667,7 +1701,7 @@ with st.sidebar:
         help="Enter URL to document or webpage (PDF, DOCX, HTML, etc.)",
         label_visibility="collapsed"
     )
-    
+
     if url:
         if st.button("📥 Add URL Document", use_container_width=True):
             # Download the file from the URL
@@ -1675,19 +1709,19 @@ with st.sidebar:
             if downloaded_file:
                 # Extract filename from path
                 file_name = os.path.basename(downloaded_file)
-                
+
                 # Move file to uploads directory
                 data_dir = "data/uploads"
                 os.makedirs(data_dir, exist_ok=True)
                 upload_file_path = os.path.join(data_dir, file_name)
-                
+
                 try:
                     os.rename(downloaded_file, upload_file_path)
-                    
+
                     # Get file size and upload time
                     file_size = os.path.getsize(upload_file_path)
                     upload_time = datetime.now().strftime("%H:%M:%S")
-                    
+
                     # Read file content for text files
                     content = None
                     file_type = file_name.split('.')[-1].lower()
@@ -1697,7 +1731,7 @@ with st.sidebar:
                                 content = f.read()
                         except:
                             content = None
-                    
+
                     # Insert document into database
                     if insert_document_to_db(
                         filename=file_name,
@@ -1713,7 +1747,7 @@ with st.sidebar:
                             "upload_time": upload_time,
                             "source_path": upload_file_path
                         }
-                        
+
                         # Add to session state
                         st.session_state.uploaded_documents.append(doc_info)
                         st.success(f"✅ File '{file_name}' downloaded and added successfully to database!")
@@ -1724,12 +1758,12 @@ with st.sidebar:
                     st.error(f"Error moving file: {e}")
             else:
                 st.error("Failed to download file from URL.")
-    
+
     st.markdown('</div>', unsafe_allow_html=True)
-    
+
     # Display uploaded documents in sidebar
     st.markdown('<div class="sidebar-header">📁 Uploaded Documents</div>', unsafe_allow_html=True)
-    
+
     if st.session_state.uploaded_documents:
         for i, doc_info in enumerate(st.session_state.uploaded_documents):
             col1, col2 = st.columns([4, 1])
@@ -1750,64 +1784,65 @@ with st.sidebar:
                         st.error(f"Error deleting file: {e}")
     else:
         st.info("📝 No documents uploaded yet")
-    
+
     st.markdown("---")
-    
-    # Display current LLM, embedding, and extraction providers
+
+    # Display current LLM, embedding, and extraction providers (for reference)
     if llm_provider == "openai":
         openai_model = st.session_state.get("openai_model", "gpt-4o-mini")
         st.info(f"💬 Chat: OpenAI ({openai_model})")
     elif llm_provider == "mistral":
         mistral_model = st.session_state.get("mistral_model", "mistral-large-latest")
         st.info(f"💬 Chat: Mistral ({mistral_model})")
-    
+
     # Display embedding provider
     if embedding_provider == "openai":
         st.info(f"🧬 Embeddings: OpenAI (text-embedding-3-large)")
     elif embedding_provider == "mistral":
         st.info(f"🧬 Embeddings: Mistral (mistral-embed)")
-    
+
     # Display extraction provider
     extraction_provider = st.session_state.get("extraction_provider", "docling")
     if extraction_provider == "docling":
         st.info(f"📄 Extraction: Docling (local)")
     elif extraction_provider == "mistral":
         st.info(f"📄 Extraction: Mistral OCR (cloud)")
-    
-    # Add settings button to reconfigure
-    if st.button("⚙️ Change LLM Provider", use_container_width=True):
-        # Clear all configuration
-        st.session_state.api_keys_configured = False
-        st.session_state.openai_client = None
-        st.session_state.mistral_client = None
-        st.session_state.embedding_provider = "openai"
-        st.session_state.messages = []  # Clear chat history
-        st.rerun()
-    
+
+    # Only admins can change LLM provider
+    if is_admin({"role": st.session_state.get("user_role")}):
+        if st.button("⚙️ Change LLM Provider", use_container_width=True):
+            # Clear all configuration
+            st.session_state.api_keys_configured = False
+            st.session_state.openai_client = None
+            st.session_state.mistral_client = None
+            st.session_state.embedding_provider = "openai"
+            st.session_state.messages = []  # Clear chat history
+            st.rerun()
+
     st.markdown("---")
-    
+
     # File selection for extraction
     if st.session_state.uploaded_documents:
         file_options = [doc["name"] for doc in st.session_state.uploaded_documents]
         selected_file = st.selectbox(
-        
+
             "📄 Select file to process:",
             options=file_options,
             help="Choose which uploaded file you want to extract"
         )
-    
+
     # Processing buttons
     col1, col2, col3 = st.columns(3)
-    
+
     with col1:
         extract_btn = st.button("🚀 Extract", use_container_width=True, type="primary")
-    
+
     with col2:
         fast_split_btn = st.button("⚡ Fast Split Only", use_container_width=True, type="primary")
 
     with col3:
         chunk_btn = st.button("🔪 Chunk", use_container_width=True, type="secondary")
-    
+
     embed_btn = st.button("🧬 Embed", use_container_width=True, type="secondary")
 
     # Fast splitting only
@@ -1830,7 +1865,7 @@ with st.sidebar:
                             st.code(result.stdout, language="text")
                             status.update(label="✅ Fast Splitting Complete!", state="complete")
                             st.balloons()
-                            
+
                             # Auto-refresh to show new chunk files
                             st.rerun()
                         else:
@@ -1844,7 +1879,7 @@ with st.sidebar:
                 st.error("❌ Selected file not found")
         else:
             st.warning("📝 Please upload a document file first")
-    
+
     # Process extraction
     if extract_btn:
         if st.session_state.uploaded_documents:
@@ -1853,17 +1888,17 @@ with st.sidebar:
             if selected_doc:
                 source_to_use = selected_doc["source_path"]
                 st.session_state["source_to_use"] = source_to_use
-                
+
                 with st.status("🔄 Processing extraction...", expanded=True) as status:
                     # Update the extraction source
                     st.write("📝 Updating extraction script...")
                     if update_extraction_source(source_to_use):
                         st.write("✅ Extraction script updated")
-                        
+
                         # Run the extraction process
                         st.write("🔍 Extracting document content...")
                         success, output = run_extraction(source_to_use)
-                        
+
                         if success:
                             st.write("✅ Extraction completed successfully!")
                             st.code(output, language="text")
@@ -1871,7 +1906,7 @@ with st.sidebar:
                             st.session_state["extraction_successful"] = True
                             st.balloons()
                             st.success("Document ready for questions! 🎉")
-                            
+
                             # Auto-refresh to show updated state
                             st.rerun()
                         else:
@@ -1885,7 +1920,7 @@ with st.sidebar:
                 st.error("❌ Selected file not found")
         else:
             st.warning("📝 Please upload a document file first")
-    
+
     # Process chunking
     if chunk_btn:
         if not st.session_state.uploaded_documents:
@@ -1953,36 +1988,63 @@ with st.sidebar:
                                 - Verify database connection string in .env file
                                 - Try running the script manually: `python 2-chunking-neon.py`
                                 """)
-    
+
     # Process embedding
     if embed_btn:
         with st.status("🔄 Processing embedding...", expanded=True) as status:
             st.write("🧬 Creating embeddings...")
             success, output = run_embedding()
-            
+
             if success:
                 st.write("✅ Embedding completed successfully!")
                 st.code(output, language="text")
                 status.update(label="✅ Embedding Complete!", state="complete")
                 st.success("Embeddings created successfully! 🎯")
-                
+
                 # Auto-refresh to show updated state
                 st.rerun()
             else:
                 st.error("❌ Embedding failed")
                 st.code(output, language="text")
                 status.update(label="❌ Embedding Failed", state="error")
-    
-    
-    # Initialize session state for chat history
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
 
-# Main content area with tabs
-st.markdown('<div class="main-header">📚 Document Q&A Assistant</div>', unsafe_allow_html=True)
 
-# Create tabs for Chat and Database Management
-tab1, tab2 = st.tabs(["💬 Chat", "🗃️ Database Management"])
+# Sidebar for document processing and user management
+with st.sidebar:
+    # Show current user info for all authenticated users
+    show_current_user_info()
+
+    # Show different sidebar content based on user role
+    if is_admin({"role": st.session_state.get("user_role")}):
+        # Admin sidebar with user management
+        tab1, tab2 = st.tabs(["📄 Documents", "👥 Users"])
+
+        with tab1:
+            st.markdown('<div class="sidebar-header">📄 Document Processing</div>', unsafe_allow_html=True)
+            show_document_processing_sidebar()
+
+        with tab2:
+            show_user_management()
+    else:
+        # Regular user sidebar - only document processing
+        st.markdown('<div class="sidebar-header">📄 Document Processing</div>', unsafe_allow_html=True)
+        show_document_processing_sidebar()
+
+# Remove the duplicate function definition that was moved above
+
+# Main content area with role-based header and tabs
+current_user_role = st.session_state.get("user_role", "user")
+current_username = st.session_state.get("username", "User")
+
+# Role-based header
+if is_admin({"role": current_user_role}):
+    st.markdown(f'<div class="main-header">📚 Document Q&A Assistant<br><small>👑 Admin Access - {current_username}</small></div>', unsafe_allow_html=True)
+    # Admin tabs: Chat, Database Management, and User Management
+    tab1, tab2, tab3 = st.tabs(["💬 Chat", "🗃️ Database Management", "👥 User Management"])
+else:
+    st.markdown(f'<div class="main-header">📚 Document Q&A Assistant<br><small>👤 User Access - {current_username}</small></div>', unsafe_allow_html=True)
+    # User tabs: Chat and Database Management only
+    tab1, tab2 = st.tabs(["💬 Chat", "🗃️ Database Management"])
 # Chat input section - placed after tabs
 
 
@@ -2265,6 +2327,12 @@ with tab2:
                 st.warning(f"⚡ **{total_docs - processed_docs} documents** still need processing")
             else:
                 st.success("🎉 **All documents are fully processed** and ready for questions!")
+
+
+# Tab 3: User Management (Admin only)
+if is_admin({"role": st.session_state.get("user_role")}):
+    with tab3:
+        show_user_management()
 
 
 if prompt := st.chat_input("💬 Ask a question about the document...", key="chat_input"):

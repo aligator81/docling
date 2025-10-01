@@ -19,7 +19,7 @@ pyarrow  # Added back - cmake now available in Dockerfile
 
 # Document processing - compatible with Python 3.11
 pymupdf==1.24.14
-pillow==10.0.0  # Added back - should work with cmake available
+pillow==10.4.0  # Updated to stable version
 docling==2.54.0
 
 # Database
@@ -37,3 +37,6 @@ beautifulsoup4==4.12.3
 lxml==4.9.3  # Added back - should work with cmake available
 
 # opencv-python-headless==4.8.0.76  # ~200MB - uncommented for Docker deployment
+
+# Authentication
+bcrypt==4.1.2
