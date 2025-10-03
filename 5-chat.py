@@ -2846,6 +2846,6 @@ if prompt := st.chat_input("💬 Ask a question about the document...", key="cha
             st.session_state.messages.append({"role": "assistant", "content": error_msg})
             status.update(label="❌ Error Occurred", state="error")
 
-    # Force a rerun to ensure the chat display updates
-    st.rerun()
+    # Chat display updates automatically through session state
+    # No need for manual rerun - this was causing the loop issue
 
