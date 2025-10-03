@@ -108,10 +108,10 @@ def create_user(username: str, password: str, email: str = None, role: str = "us
             # Hash password and create user
             password_hash = hash_password(password)
             cur.execute("""
-                INSERT INTO users (username, password_hash, email, role, created_at)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO users (username, password_hash, email, role, created_at, is_active)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 RETURNING id
-            """, (username, password_hash, email, role, datetime.now()))
+            """, (username, password_hash, email, role, datetime.now(), False))
 
             user_id = cur.fetchone()[0]
             conn.commit()
@@ -333,6 +333,41 @@ def activate_user(user_id: int) -> tuple[bool, str]:
 def is_admin(user_data: Dict[str, Any]) -> bool:
     """Check if user is an admin"""
     return user_data.get("role") == "admin"
+
+def delete_user(user_id: int) -> tuple[bool, str]:
+    """Delete a user account (admin function)"""
+    conn = get_db_connection()
+    if not conn:
+        return False, "Database connection failed"
+
+    try:
+        with conn.cursor() as cur:
+            # Check if user exists
+            cur.execute("SELECT username, role FROM users WHERE id = %s", (user_id,))
+            user = cur.fetchone()
+
+            if not user:
+                return False, "User not found"
+
+            username, role = user
+
+            # Prevent deletion of the last admin user
+            if role == "admin":
+                cur.execute("SELECT COUNT(*) FROM users WHERE role = 'admin' AND id != %s", (user_id,))
+                admin_count = cur.fetchone()[0]
+                if admin_count == 0:
+                    return False, "Cannot delete the last admin user"
+
+            # Delete user
+            cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
+            conn.commit()
+
+            return True, f"User '{username}' has been deleted successfully"
+
+    except Exception as e:
+        return False, f"Error deleting user: {str(e)}"
+    finally:
+        conn.close()
 
 def is_user_active(user_data: Dict[str, Any]) -> bool:
     """Check if user account is active"""

@@ -36,7 +36,7 @@ def create_users_table():
                     role VARCHAR(20) DEFAULT 'user' CHECK (role IN ('admin', 'user')),
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_login TIMESTAMP,
-                    is_active BOOLEAN DEFAULT TRUE
+                    is_active BOOLEAN DEFAULT FALSE
                 );
             """)
 
@@ -96,9 +96,9 @@ def create_users_table():
                 password_hash = bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
 
                 cur.execute("""
-                    INSERT INTO users (username, password_hash, email, role, created_at)
-                    VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
-                """, (username, password_hash, email, "admin"))
+                    INSERT INTO users (username, password_hash, email, role, created_at, is_active)
+                    VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP, %s)
+                """, (username, password_hash, email, "admin", True))
 
                 conn.commit()
                 print(f"SUCCESS: Default admin user '{username}' created successfully!")

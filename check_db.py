@@ -16,7 +16,7 @@ load_dotenv()
 NEON_CONNECTION_STRING = os.getenv("NEON_CONNECTION_STRING")
 
 if not NEON_CONNECTION_STRING:
-    print("❌ NEON_CONNECTION_STRING environment variable is required but not set!")
+    print("[ERROR] NEON_CONNECTION_STRING environment variable is required but not set!")
     print("Please set it in your .env file or environment variables.")
     sys.exit(1)
 
@@ -29,11 +29,11 @@ def get_db_connection():
             cur.execute("SELECT 1")
         return conn
     except Exception as e:
-        print(f"❌ Database connection failed: {e}")
+        print(f"[ERROR] Database connection failed: {e}")
         print(f"Connection string: {NEON_CONNECTION_STRING[:50]}...")
         return None
     except:
-        print("❌ Unexpected error connecting to database")
+        print("[ERROR] Unexpected error connecting to database")
         return None
 
 def check_database_contents():
@@ -43,7 +43,7 @@ def check_database_contents():
         return
 
     try:
-        print("🔍 Checking Neon Database Contents...\n")
+        print("[DB] Checking Neon Database Contents...\n")
 
         with conn.cursor() as cur:
             # Check existing tables
@@ -54,16 +54,16 @@ def check_database_contents():
             """)
             existing_tables = [row[0] for row in cur.fetchall()]
 
-            print("📊 DATABASE TABLES:")
+            print("[STATS] DATABASE TABLES:")
             print("=" * 50)
 
             for table in ['documents', 'document_chunks', 'embeddings']:
                 if table in existing_tables:
                     cur.execute(f"SELECT COUNT(*) FROM {table}")
                     count = cur.fetchone()[0]
-                    print(f"✅ {table}: {count} records")
+                    print(f"[OK] {table}: {count} records")
                 else:
-                    print(f"❌ {table}: table does not exist")
+                    print(f"[ERROR] {table}: table does not exist")
 
             print(f"\n{'='*50}")
 
@@ -73,7 +73,7 @@ def check_database_contents():
                 doc_count = cur.fetchone()[0]
 
                 if doc_count > 0:
-                    print(f"\n📄 DOCUMENTS ({doc_count} total):")
+                    print(f"\n[DOC] DOCUMENTS ({doc_count} total):")
                     print("-" * 30)
                     cur.execute("""
                         SELECT id, filename, file_size, file_type, processed, upload_date
@@ -83,7 +83,7 @@ def check_database_contents():
                     docs = cur.fetchall()
                     for doc in docs:
                         doc_id, filename, file_size, file_type, processed, upload_date = doc
-                        status = "✅ PROCESSED" if processed else "⏳ UNPROCESSED"
+                        status = "[OK] PROCESSED" if processed else "[PENDING] UNPROCESSED"
                         print(f"[{doc_id}] {filename}")
                         print(f"    Size: {file_size} bytes | Type: {file_type} | Status: {status}")
                         print(f"    Uploaded: {upload_date}")
@@ -95,7 +95,7 @@ def check_database_contents():
                 chunk_count = cur.fetchone()[0]
 
                 if chunk_count > 0:
-                    print(f"\n🔪 DOCUMENT CHUNKS ({chunk_count} total):")
+                    print(f"\n[CHUNK] DOCUMENT CHUNKS ({chunk_count} total):")
                     print("-" * 30)
                     cur.execute("""
                         SELECT dc.id, d.filename, dc.chunk_index, LENGTH(dc.chunk_text) as text_length, dc.token_count
@@ -118,7 +118,7 @@ def check_database_contents():
                 embedding_count = cur.fetchone()[0]
 
                 if embedding_count > 0:
-                    print(f"\n🧬 EMBEDDINGS ({embedding_count} total):")
+                    print(f"\n[EMBED] EMBEDDINGS ({embedding_count} total):")
                     print("-" * 30)
 
                     # Group by provider
@@ -126,9 +126,9 @@ def check_database_contents():
                     provider_counts = cur.fetchall()
 
                     for provider, count in provider_counts:
-                        print(f"📊 {provider}: {count} embeddings")
+                        print(f"[STATS] {provider}: {count} embeddings")
 
-                    print("\n🔍 Recent embeddings:")
+                    print("\n[DB] Recent embeddings:")
                     cur.execute("""
                         SELECT e.id, d.filename, e.embedding_provider, e.embedding_model, e.created_at
                         FROM embeddings e
@@ -147,26 +147,26 @@ def check_database_contents():
 
             # Summary
             print(f"{'='*50}")
-            print("📈 SUMMARY:")
+            print("[SUMMARY] SUMMARY:")
             print(f"• Documents: {doc_count}")
             print(f"• Chunks: {chunk_count}")
             print(f"• Embeddings: {embedding_count}")
 
             if embedding_count > 0:
-                print("\n✅ SUCCESS: Your Neon database contains embeddings!")
-                print("🚀 You can now use the chat interface to ask questions about your documents.")
+                print("\n[OK] SUCCESS: Your Neon database contains embeddings!")
+                print("[SUCCESS] You can now use the chat interface to ask questions about your documents.")
             else:
-                print("\n❌ No embeddings found in your Neon database.")
-                print("💡 Run the embedding process to create embeddings from your chunks.")
+                print("\n[ERROR] No embeddings found in your Neon database.")
+                print("[TIP] Run the embedding process to create embeddings from your chunks.")
 
     except Exception as e:
-        print(f"❌ Error checking database: {e}")
+        print(f"[ERROR] Error checking database: {e}")
         import traceback
         traceback.print_exc()
     finally:
         conn.close()
 
 if __name__ == "__main__":
-    print("🔍 Neon Database Content Checker")
+    print("[DB] Neon Database Content Checker")
     print("=" * 50)
     check_database_contents()

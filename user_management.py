@@ -9,7 +9,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from auth_utils import (
     get_all_users, update_user_role, deactivate_user, activate_user,
-    is_admin, create_user, validate_username, validate_email, validate_password
+    is_admin, create_user, validate_username, validate_email, validate_password, delete_user
 )
 
 def show_user_management():
@@ -19,7 +19,8 @@ def show_user_management():
     st.markdown("Manage user accounts, roles, and permissions.")
 
     # Check if current user is admin
-    if not is_admin(st.session_state.get("user_data", {})):
+    user_role = st.session_state.get("user_role", "")
+    if user_role != "admin":
         st.error("❌ Access denied. Admin privileges required.")
         return
 
@@ -47,7 +48,7 @@ def show_user_management():
     user_df = pd.DataFrame(users)
     user_df["created_at"] = pd.to_datetime(user_df["created_at"]).dt.strftime("%Y-%m-%d %H:%M")
     user_df["last_login"] = user_df["last_login"].apply(
-        lambda x: pd.to_datetime(x).strftime("%Y-%m-%d %H:%M") if x else "Never"
+        lambda x: pd.to_datetime(x).strftime("%Y-%m-%d %H:%M") if x and str(x) != 'NaT' else "Never"
     )
 
     # Custom styling for the table
@@ -136,53 +137,67 @@ def show_user_management():
             with col5:
                 # Action buttons
                 if user['id'] != st.session_state.get("user_id"):  # Don't allow self-management
-                    col_btn1, col_btn2, col_btn3 = st.columns(3)
+                    # Use container instead of nested columns to avoid sidebar restrictions
+                    with st.container():
+                        col1, col2, col3, col4 = st.columns(4)
 
-                    with col_btn1:
-                        if user['role'] == "user":
-                            if st.button("👑 Promote", key=f"promote_{user['id']}", help=f"Make {user['username']} an admin"):
-                                success, message = update_user_role(user['id'], "admin")
-                                if success:
-                                    st.success(f"✅ {message}")
-                                    st.rerun()
-                                else:
-                                    st.error(f"❌ {message}")
-                        else:
-                            if st.button("👤 Demote", key=f"demote_{user['id']}", help=f"Make {user['username']} a regular user"):
-                                success, message = update_user_role(user['id'], "user")
-                                if success:
-                                    st.success(f"✅ {message}")
-                                    st.rerun()
-                                else:
-                                    st.error(f"❌ {message}")
-
-                    with col_btn2:
-                        if user['is_active']:
-                            if st.button("🚫 Deactivate", key=f"deactivate_{user['id']}", help=f"Deactivate {user['username']}'s account"):
-                                success, message = deactivate_user(user['id'])
-                                if success:
-                                    st.warning(f"⚠️ {message}")
-                                    st.rerun()
-                                else:
-                                    st.error(f"❌ {message}")
-                        else:
-                            if st.button("✅ Activate", key=f"activate_{user['id']}", help=f"Activate {user['username']}'s account"):
-                                success, message = activate_user(user['id'])
-                                if success:
-                                    st.success(f"✅ {message}")
-                                    st.rerun()
-                                else:
-                                    st.error(f"❌ {message}")
-
-                    with col_btn3:
-                        if st.button("🗑️ Delete", key=f"delete_{user['id']}", help=f"Delete {user['username']}'s account"):
-                            if st.session_state.get(f"confirm_delete_{user['id']}", False):
-                                # This would need additional implementation for actual deletion
-                                st.error("❌ Account deletion not implemented yet")
-                                st.session_state[f"confirm_delete_{user['id']}"] = False
+                        with col1:
+                            if user['role'] == "user":
+                                if st.button("👑 Promote", key=f"promote_{user['id']}", help=f"Make {user['username']} an admin"):
+                                    success, message = update_user_role(user['id'], "admin")
+                                    if success:
+                                        st.success(f"✅ {message}")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ {message}")
                             else:
-                                st.warning(f"⚠️ Click again to confirm deletion of '{user['username']}'")
-                                st.session_state[f"confirm_delete_{user['id']}"] = True
+                                if st.button("👤 Demote", key=f"demote_{user['id']}", help=f"Make {user['username']} a regular user"):
+                                    success, message = update_user_role(user['id'], "user")
+                                    if success:
+                                        st.success(f"✅ {message}")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ {message}")
+
+                        with col2:
+                            if user['is_active']:
+                                if st.button("🚫 Deactivate", key=f"deactivate_{user['id']}", help=f"Deactivate {user['username']}'s account"):
+                                    success, message = deactivate_user(user['id'])
+                                    if success:
+                                        st.warning(f"⚠️ {message}")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ {message}")
+                            else:
+                                if st.button("✅ Activate", key=f"activate_{user['id']}", help=f"Activate {user['username']}'s account"):
+                                    success, message = activate_user(user['id'])
+                                    if success:
+                                        st.success(f"✅ {message}")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ {message}")
+
+                        with col3:
+                            if st.button("🗑️ Delete", key=f"delete_{user['id']}", help=f"Delete {user['username']}'s account"):
+                                if st.session_state.get(f"confirm_delete_{user['id']}", False):
+                                    # Perform deletion
+                                    success, message = delete_user(user['id'])
+                                    if success:
+                                        st.success(f"✅ {message}")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ {message}")
+                                    # Reset confirmation state
+                                    st.session_state[f"confirm_delete_{user['id']}"] = False
+                                else:
+                                    st.warning(f"⚠️ Click again to confirm deletion of '{user['username']}'")
+                                    st.session_state[f"confirm_delete_{user['id']}"] = True
+
+                            # Reset confirmation button (only show when confirmation is active)
+                            if st.session_state.get(f"confirm_delete_{user['id']}", False):
+                                if st.button("❌ Cancel", key=f"cancel_delete_{user['id']}", help="Cancel deletion"):
+                                    st.session_state[f"confirm_delete_{user['id']}"] = False
+                                    st.rerun()
                 else:
                     st.caption("🔒 Cannot modify own account")
 

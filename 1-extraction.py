@@ -42,6 +42,22 @@ from PIL import Image
 from io import BytesIO
 import fitz
 
+# GPU acceleration imports (optional)
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    torch = None
+
+try:
+    from transformers import AutoModel, AutoTokenizer
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    TRANSFORMERS_AVAILABLE = False
+    AutoModel = None
+    AutoTokenizer = None
+
 # Load environment variables
 load_dotenv()
 
@@ -263,6 +279,75 @@ class UnifiedExtractor:
         self.document_cache = DocumentCache()
         self.output_dir = "output"
         os.makedirs(self.output_dir, exist_ok=True)
+        self.gpu_available = self._check_gpu_availability()
+
+    def _check_gpu_availability(self, force_gpu: bool = False, force_cpu: bool = False) -> bool:
+        """Check if GPU acceleration is available"""
+        if not TORCH_AVAILABLE:
+            print("🔶 GPU acceleration not available: PyTorch not installed")
+            return False
+
+        if force_cpu:
+            print("🖥️ CPU mode forced by user")
+            return False
+
+        if torch.cuda.is_available():
+            gpu_count = torch.cuda.device_count()
+            gpu_name = torch.cuda.get_device_name(0) if gpu_count > 0 else "Unknown GPU"
+
+            # Check GPU memory if limit specified
+            if gpu_count > 0 and hasattr(torch.cuda, 'get_device_properties'):
+                gpu_props = torch.cuda.get_device_properties(0)
+                gpu_memory_gb = gpu_props.total_memory / (1024**3)
+                print(f"✅ GPU acceleration available: {gpu_name} ({gpu_memory_gb:.1f}GB)")
+
+                # Check memory limit if specified
+                if hasattr(self, 'gpu_memory_limit') and self.gpu_memory_limit:
+                    if gpu_memory_gb < self.gpu_memory_limit:
+                        print(f"⚠️ GPU memory ({gpu_memory_gb:.1f}GB) below recommended limit ({self.gpu_memory_limit}GB)")
+                        print("🔶 Falling back to CPU mode for stability")
+                        return False
+            else:
+                print(f"✅ GPU acceleration available: {gpu_name} ({gpu_count} GPU(s))")
+
+            return True
+        else:
+            if force_gpu:
+                print("🔶 Forced GPU mode requested but no CUDA-compatible GPU found")
+                print("💡 Install CUDA-compatible GPU and drivers, or run without --force-gpu")
+            else:
+                print("🔶 GPU acceleration not available: No CUDA-compatible GPU found")
+            return False
+
+    def _get_accelerator_config(self, force_gpu: bool = False, force_cpu: bool = False, gpu_memory_limit: float = None) -> Dict:
+        """Get accelerator configuration for Docling"""
+        config = {}
+
+        # Store memory limit for availability check
+        self.gpu_memory_limit = gpu_memory_limit
+
+        # Check GPU availability with user preferences
+        gpu_available = self._check_gpu_availability(force_gpu, force_cpu)
+
+        if gpu_available and torch.cuda.is_available():
+            # Use GPU acceleration
+            config["accelerator"] = "cuda"
+            config["accelerator_options"] = {
+                "device_id": 0,
+                "mixed_precision": "fp16"  # Use half precision for faster processing
+            }
+
+            # Add memory management if limit specified
+            if gpu_memory_limit:
+                config["accelerator_options"]["memory_limit"] = int(gpu_memory_limit * 1024 * 1024 * 1024)  # Convert GB to bytes
+
+            print("🚀 Using GPU acceleration for Docling")
+        else:
+            # Use CPU
+            config["accelerator"] = "cpu"
+            print("🖥️ Using CPU for Docling")
+
+        return config
 
     def _get_supported_formats(self) -> Dict[str, InputFormat]:
         """Get supported file formats mapping"""
@@ -321,7 +406,19 @@ class UnifiedExtractor:
             base_name = os.path.splitext(os.path.basename(file_path))[0]
             filename = f"{self.output_dir}/{base_name}_docling_extracted.md"
 
-            print(f"🔍 Extracting with Docling: {file_path}")
+            # Check file size
+            file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+            print(f"🔍 Extracting with Docling: {file_path} ({file_size_mb:.1f}MB)")
+
+            if file_size_mb > 50:  # Warn for very large files
+                print(f"⚠️ Warning: Large file detected ({file_size_mb:.1f}MB). This may take a while...")
+
+            # Show GPU memory status before processing if GPU is available
+            if self.gpu_available and torch.cuda.is_available():
+                memory_allocated = torch.cuda.memory_allocated(0) / (1024**3)
+                memory_reserved = torch.cuda.memory_reserved(0) / (1024**3)
+                memory_total = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                print(f"💾 GPU Memory: {memory_allocated:.1f}GB allocated, {memory_reserved:.1f}GB reserved, {memory_total:.1f}GB total")
 
             # Get file format
             file_extension = os.path.splitext(file_path)[1].lower()
@@ -333,30 +430,113 @@ class UnifiedExtractor:
 
             input_format = format_mapping[file_extension]
 
-            # Create converter
-            converter = DocumentConverter(allowed_formats=[input_format])
-            result = converter.convert(file_path)
-            doc = result.document
+            # Create converter with GPU acceleration and optimization
+            print("🔄 Initializing Docling converter...")
+            accelerator_config = self._get_accelerator_config(
+                force_gpu=getattr(self, 'force_gpu', False),
+                force_cpu=getattr(self, 'force_cpu', False),
+                gpu_memory_limit=getattr(self, 'gpu_memory_limit', None)
+            )
 
-            # Export to markdown
-            content = doc.export_to_markdown()
+            converter = DocumentConverter(
+                allowed_formats=[input_format],
+                format_options={
+                    input_format: {
+                        "pipeline_options": {
+                            "do_ocr": enable_ocr,
+                            "do_table_structure": True,
+                            "accelerator": accelerator_config.get("accelerator"),
+                            "accelerator_options": accelerator_config.get("accelerator_options", {})
+                        }
+                    }
+                }
+            )
 
-            # Save to file
-            if self._save_to_file(content, filename):
-                print(f"✅ Docling extraction completed! Content saved to: {filename}")
-                print(f"📄 Extracted {len(content)} characters")
+            print("🔄 Starting document conversion (this may take several minutes for large files)...")
+            start_time = time.time()
 
-                # Cache the result
-                self.document_cache.cache_result(file_path, "docling_extraction", {
-                    "content": content,
-                    "filename": filename,
-                    "file_extension": file_extension,
-                    "enable_ocr": enable_ocr
-                })
+            # Add timeout handling for large files (Windows compatible)
+            timeout_seconds = min(int(file_size_mb * 2), 1800)  # Max 30 minutes, min based on file size
+            print(f"⏱️ Setting timeout to {timeout_seconds} seconds ({timeout_seconds/60:.1f} minutes)")
 
-                return True, content, "docling"
-            else:
-                return False, "", "save_error"
+            try:
+                # Use threading for timeout on Windows
+                import threading
+
+                result = None
+                exception = None
+
+                def convert_with_timeout():
+                    nonlocal result, exception
+                    try:
+                        result = converter.convert(file_path)
+                    except Exception as e:
+                        exception = e
+
+                # Start conversion in a separate thread
+                convert_thread = threading.Thread(target=convert_with_timeout)
+                convert_thread.daemon = True
+                convert_thread.start()
+                convert_thread.join(timeout_seconds)
+
+                if convert_thread.is_alive():
+                    print(f"⏰ Document conversion timed out after {timeout_seconds} seconds")
+                    return False, "", "timeout"
+
+                if exception:
+                    raise exception
+
+                if not result:
+                    print("❌ No result from document conversion")
+                    return False, "", "conversion_error"
+
+                doc = result.document
+
+                processing_time = time.time() - start_time
+                print(f"✅ Document conversion completed in {processing_time:.1f} seconds")
+
+                # GPU memory cleanup if using GPU
+                if gpu_available and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    if torch.cuda.is_available():
+                        memory_used = torch.cuda.memory_allocated(0) / (1024**3)
+                        print(f"💾 GPU memory after cleanup: {memory_used:.1f}GB")
+
+                # Export to markdown with enhanced metadata preservation
+                print("📝 Exporting to markdown...")
+                content = doc.export_to_markdown()
+
+                # Enhance content with page number information if available
+                if hasattr(doc, 'body') and hasattr(doc.body, 'body'):
+                    enhanced_content = enhance_content_with_metadata(doc, content)
+                    if enhanced_content:
+                        content = enhanced_content
+
+                # Save to file
+                if self._save_to_file(content, filename):
+                    print(f"✅ Docling extraction completed! Content saved to: {filename}")
+                    print(f"📄 Extracted {len(content)} characters in {processing_time:.1f} seconds")
+
+                    # Cache the result
+                    self.document_cache.cache_result(file_path, "docling_extraction", {
+                        "content": content,
+                        "filename": filename,
+                        "file_extension": file_extension,
+                        "enable_ocr": enable_ocr,
+                        "processing_time": processing_time
+                    })
+
+                    return True, content, "docling"
+                else:
+                    return False, "", "save_error"
+
+            except Exception as e:
+                if "Memory" in str(e) or "memory" in str(e).lower():
+                    print(f"💾 Memory error during processing: {e}")
+                    return False, "", "memory_error"
+                else:
+                    print(f"❌ Document conversion failed: {e}")
+                    return False, "", "conversion_error"
 
         except Exception as e:
             print(f"❌ Docling extraction failed: {e}")
@@ -500,7 +680,7 @@ class UnifiedExtractor:
 
         return success, content, method
 
-    def process_from_database(self, mark_processed: bool = False) -> int:
+    def process_from_database(self, mark_processed: bool = False, timeout_hours: float = None, start_from_id: int = None) -> int:
         """Process all unprocessed documents from database"""
         documents = self.db_manager.get_unprocessed_documents()
 
@@ -508,11 +688,50 @@ class UnifiedExtractor:
             print("✅ No unprocessed documents found in database")
             return 0
 
+        # Filter documents if starting from specific ID
+        if start_from_id:
+            documents = [doc for doc in documents if doc['id'] >= start_from_id]
+            if not documents:
+                print(f"✅ No unprocessed documents found starting from ID {start_from_id}")
+                return 0
+
         print(f"📋 Found {len(documents)} unprocessed document(s) in database")
+        if start_from_id:
+            print(f"🔄 Starting from document ID: {start_from_id}")
+
+        # Show document details before processing
+        total_size_mb = sum(doc.get('file_size', 0) for doc in documents) / (1024 * 1024)
+        print(f"📊 Total size: {total_size_mb:.1f}MB")
+
+        # Show individual document sizes
+        for doc in documents:
+            file_path = doc.get('file_path', '')
+            if file_path and os.path.exists(file_path):
+                actual_size = os.path.getsize(file_path)
+                actual_size_mb = actual_size / (1024 * 1024)
+                print(f"  • {doc['filename']}: {actual_size_mb:.1f}MB (actual file size)")
+            else:
+                print(f"  • {doc['filename']}: {doc.get('file_size', 0)/(1024*1024):.1f}MB (database size)")
+
         success_count = 0
+        start_time = time.time()
+        processed_count = 0
 
         for doc in documents:
-            print(f"\n🔄 Processing: {doc['filename']} (ID: {doc['id']})")
+            # Check timeout if specified
+            if timeout_hours and (time.time() - start_time) > (timeout_hours * 3600):
+                print(f"\n⏰ Timeout reached after {timeout_hours} hours. Processed {processed_count}/{len(documents)} documents.")
+                print(f"💡 To resume from document ID {doc['id']}, use: --start-from-id {doc['id']}")
+                break
+
+            file_path = doc.get('file_path', '')
+            if file_path and os.path.exists(file_path):
+                actual_size = os.path.getsize(file_path)
+                file_size_mb = actual_size / (1024 * 1024)
+            else:
+                file_size_mb = doc.get('file_size', 0) / (1024 * 1024)
+
+            print(f"\n🔄 Processing [{processed_count + 1}/{len(documents)}]: {doc['filename']} (ID: {doc['id']}, {file_size_mb:.1f}MB)")
 
             success, content, method = self.extract_document(doc['file_path'])
 
@@ -525,8 +744,30 @@ class UnifiedExtractor:
                     print(f"❌ Failed to store content in database: {doc['filename']}")
             else:
                 print(f"❌ Failed to extract content: {doc['filename']}")
+                if method == "timeout":
+                    print(f"💡 Tip: Large files may need more time. Consider increasing timeout with --timeout-hours")
+                elif method == "memory_error":
+                    print(f"💡 Tip: File too large for available memory. Try processing smaller files first.")
 
-        print(f"\n🎉 Database processing completed! Successfully processed {success_count}/{len(documents)} documents")
+            processed_count += 1
+
+            # Show progress every document for better tracking
+            if processed_count % 1 == 0:  # Show every document
+                elapsed_time = time.time() - start_time
+                rate = processed_count / elapsed_time if elapsed_time > 0 else 0
+                remaining = len(documents) - processed_count
+                eta = remaining / rate if rate > 0 else 0
+
+                print(f"📊 Progress: {processed_count}/{len(documents)} | "
+                      f"Elapsed: {elapsed_time:.1f}s | "
+                      f"Rate: {rate:.2f} docs/s | "
+                      f"ETA: {eta:.1f}s")
+
+        elapsed_total = time.time() - start_time
+        print(f"\n🎉 Database processing completed! Successfully processed {success_count}/{processed_count} documents in {elapsed_total:.1f} seconds")
+        if processed_count > 0:
+            avg_time_per_doc = elapsed_total / processed_count
+            print(f"⏱️ Average time per document: {avg_time_per_doc:.1f} seconds")
         return success_count
 
     def add_file_to_database(self, file_path: str) -> bool:
@@ -672,6 +913,46 @@ class UnifiedExtractor:
         except Exception as e:
             return {"error": str(e)}
 
+def enhance_content_with_metadata(doc, content: str) -> str:
+    """Enhance extracted content with page number and section metadata"""
+    try:
+        enhanced_lines = []
+        current_page = None
+        current_section = None
+
+        # Process document body to extract page and section information
+        if hasattr(doc, 'body') and doc.body:
+            for item in doc.body.body.body:
+                if hasattr(item, 'page_numbers') and item.page_numbers:
+                    current_page = item.page_numbers
+
+                # Extract section titles from headings
+                if hasattr(item, 'level') and item.level <= 3:  # H1, H2, H3
+                    if hasattr(item, 'text') and item.text.strip():
+                        current_section = item.text.strip()
+
+                # Add metadata to content if we have page/section info
+                if current_page or current_section:
+                    line_content = ""
+                    if current_page:
+                        line_content += f"<!-- PAGE: {current_page} --> "
+                    if current_section:
+                        line_content += f"<!-- SECTION: {current_section} --> "
+
+                    if line_content.strip():
+                        enhanced_lines.append(line_content.strip())
+
+        # If we found metadata, prepend it to the content
+        if enhanced_lines:
+            metadata_section = "\n".join(enhanced_lines[:10])  # Limit to first 10 metadata entries
+            return f"{metadata_section}\n\n{content}"
+
+        return content
+
+    except Exception as e:
+        print(f"Warning: Could not enhance content with metadata: {e}")
+        return content
+
 def main():
     parser = argparse.ArgumentParser(
         description="🔥 UNIFIED DOCUMENT EXTRACTION SYSTEM 🔥",
@@ -701,6 +982,18 @@ Examples:
 
   # Enable OCR for image-heavy documents
   python unified-extraction.py --source document.pdf --enable-ocr
+
+  # Process database with timeout and resume capability
+  python unified-extraction.py --process-db --timeout-hours 2.0 --mark-processed
+
+  # Resume processing from specific document ID
+  python unified-extraction.py --process-db --start-from-id 123 --mark-processed
+
+  # Force GPU acceleration (if available)
+  python unified-extraction.py --process-db --force-gpu --gpu-memory-limit 8.0
+
+  # Force CPU processing
+  python unified-extraction.py --process-db --force-cpu
         """
     )
 
@@ -713,6 +1006,7 @@ Examples:
     input_group.add_argument("--batch-dir", help="Directory to batch process")
     input_group.add_argument("--pattern", default="*", help="File pattern for batch processing")
     input_group.add_argument("--stats", action="store_true", help="Show performance statistics")
+    input_group.add_argument("--test-gpu", action="store_true", help="Test GPU availability and exit")
 
     # Processing options
     parser.add_argument("--prefer-cloud", action="store_true", help="Prefer Mistral OCR over Docling")
@@ -720,15 +1014,36 @@ Examples:
     parser.add_argument("--no-cache", action="store_true", help="Disable caching")
     parser.add_argument("--output-dir", default="output", help="Output directory")
     parser.add_argument("--mark-processed", action="store_true", help="Mark database documents as processed")
+    parser.add_argument("--timeout-hours", type=float, help="Maximum processing time in hours (e.g., 2.5 for 2.5 hours)")
+    parser.add_argument("--start-from-id", type=int, help="Resume processing from specific document ID")
+    parser.add_argument("--extraction-timeout", type=int, default=600, help="Extraction timeout per document in seconds (default: 600)")
+    parser.add_argument("--force-gpu", action="store_true", help="Force GPU usage even if not recommended")
+    parser.add_argument("--force-cpu", action="store_true", help="Force CPU usage even if GPU is available")
+    parser.add_argument("--gpu-memory-limit", type=float, help="GPU memory limit in GB (e.g., 8.0 for 8GB)")
 
     args = parser.parse_args()
 
     # Create extractor instance
     extractor = UnifiedExtractor()
 
+    # Store GPU-related arguments for use in methods
+    extractor.force_gpu = args.force_gpu
+    extractor.force_cpu = args.force_cpu
+    extractor.gpu_memory_limit = args.gpu_memory_limit
+
     # Handle different modes
+    if args.test_gpu:
+        print("🔍 Testing GPU availability...")
+        gpu_available = extractor._check_gpu_availability(args.force_gpu, args.force_cpu)
+        if gpu_available:
+            print("✅ GPU acceleration is ready to use!")
+            return 0
+        else:
+            print("🔶 GPU acceleration not available")
+            return 1
+
     if args.stats:
-        print("📊 Performance Statistics:")
+        print(" Performance Statistics:")
         stats = extractor.get_performance_stats()
         for key, value in stats.items():
             print(f"  {key}: {value}")
@@ -736,7 +1051,11 @@ Examples:
 
     elif args.process_db:
         print("🔄 Processing all unprocessed documents from database...")
-        success_count = extractor.process_from_database(args.mark_processed)
+        success_count = extractor.process_from_database(
+            mark_processed=args.mark_processed,
+            timeout_hours=args.timeout_hours,
+            start_from_id=args.start_from_id
+        )
         return 0 if success_count > 0 else 1
 
     elif args.add_to_db:
