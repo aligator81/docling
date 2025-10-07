@@ -2808,7 +2808,11 @@ if prompt := st.chat_input("💬 Ask a question about the document...", key="cha
                     print(f"🚨 FORCE ADDED: {basic_refs.strip()}")
 
                 st.session_state.messages.append({"role": "assistant", "content": response})
-                status.update(label="✅ Response Generated!", state="complete")
+
+                # Force UI update to display the new message immediately
+                # Use a small delay to ensure the status update completes first
+                time.sleep(0.1)
+                st.rerun()
 
                 # Final debug: Show the complete response
                 print(f"🔍 Debug: Final response sent to chat:\n{response}")
