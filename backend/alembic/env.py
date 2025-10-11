@@ -1,0 +1,102 @@
+import os
+import sys
+from logging.config import fileConfig
+
+from sqlalchemy import engine_from_config, create_engine
+from sqlalchemy import pool
+from sqlalchemy.orm import sessionmaker
+from dotenv import load_dotenv
+
+from alembic import context
+
+# Load environment variables
+load_dotenv()
+
+# Add the app directory to the path so we can import models
+sys.path.append(os.path.join(os.path.dirname(__file__), 'app'))
+
+# this is the Alembic Config object, which provides
+# access to the values within the .ini file in use.
+config = context.config
+
+# Interpret the config file for Python logging.
+# This line sets up loggers basically.
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+# Import models and set target_metadata for autogenerate support
+try:
+    from app.models import Base
+    target_metadata = Base.metadata
+except ImportError as e:
+    print(f"Could not import models: {e}")
+    target_metadata = None
+
+# other values from the config, defined by the needs of env.py,
+# can be acquired:
+# my_important_option = config.get_main_option("my_important_option")
+# ... etc.
+
+
+def run_migrations_offline() -> None:
+    """Run migrations in 'offline' mode.
+
+    This configures the context with just a URL
+    and not an Engine, though an Engine is acceptable
+    here as well.  By skipping the Engine creation
+    we don't even need a DBAPI to be available.
+
+    Calls to context.execute() here emit the given string to the
+    script output.
+
+    """
+    url = config.get_main_option("sqlalchemy.url")
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+    )
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def run_migrations_online() -> None:
+    """Run migrations in 'online' mode.
+
+    In this scenario we need to create an Engine
+    and associate a connection with the context.
+
+    """
+    # Get database URL from environment
+    database_url = os.getenv("NEON_CONNECTION_STRING")
+
+    if not database_url:
+        raise ValueError("NEON_CONNECTION_STRING environment variable is required!")
+
+    # Create engine with the same configuration as the app
+    connectable = create_engine(
+        database_url,
+        poolclass=pool.NullPool,
+        connect_args={
+            "connect_timeout": 10,
+            "application_name": "AlembicMigration",
+        },
+        echo=False,
+        future=True,
+    )
+
+    with connectable.connect() as connection:
+        context.configure(
+            connection=connection, target_metadata=target_metadata
+        )
+
+        with context.begin_transaction():
+            context.run_migrations()
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()

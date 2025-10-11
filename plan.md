@@ -14,7 +14,7 @@ This document outlines the comprehensive migration strategy for transforming the
 - **LLM Integration**: OpenAI and Mistral APIs
 
 ### Target Architecture (Next.js + FastAPI)
-- **Frontend**: Next.js 15 with React 19, TypeScript, Tailwind CSS
+- **Frontend**: Next.js 15 with React 19, TypeScript, Ant Design UI Library
 - **Backend**: FastAPI with existing Python logic
 - **Database**: Neon PostgreSQL (unchanged)
 - **Authentication**: NextAuth.js with JWT tokens
@@ -88,9 +88,10 @@ frontend/
 
 #### 2.2 Core Components
 - **Authentication**: NextAuth.js with custom provider
-- **Layout**: Responsive dashboard layout
-- **Navigation**: Role-based navigation menu
-- **Theme**: Dark/light mode with Tailwind CSS
+- **Layout**: Responsive dashboard layout with Ant Design Layout components
+- **Navigation**: Role-based navigation menu using Ant Design Menu
+- **Theme**: Dark/light mode with Ant Design ConfigProvider
+- **UI Components**: Ant Design component library for consistent design system
 
 #### 2.3 API Integration
 ```typescript
@@ -127,47 +128,37 @@ export const api = {
 ```typescript
 // components/documents/UploadZone.tsx
 'use client';
-import { useDropzone } from 'react-dropzone';
-import { useState } from 'react';
+import { Upload, message } from 'antd';
+import { InboxOutlined } from '@ant-design/icons';
+
+const { Dragger } = Upload;
 
 export function UploadZone() {
-  const [uploading, setUploading] = useState(false);
-  
-  const { getRootProps, getInputProps } = useDropzone({
-    accept: {
-      'application/pdf': ['.pdf'],
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
-      'text/markdown': ['.md'],
-      'text/html': ['.html'],
-    },
-    onDrop: async (acceptedFiles) => {
-      setUploading(true);
-      const formData = new FormData();
-      acceptedFiles.forEach(file => formData.append('files', file));
-      
-      try {
-        await api.documents.upload(formData);
-        // Refresh document list
-      } catch (error) {
-        // Handle error
-      } finally {
-        setUploading(false);
+  const props = {
+    name: 'file',
+    multiple: true,
+    action: '/api/documents/upload',
+    accept: '.pdf,.docx,.md,.html,.htm,.xhtml,.png,.jpg,.jpeg,.tiff,.bmp',
+    onChange(info) {
+      const { status } = info.file;
+      if (status === 'done') {
+        message.success(`${info.file.name} uploaded successfully.`);
+      } else if (status === 'error') {
+        message.error(`${info.file.name} upload failed.`);
       }
     },
-  });
+  };
 
   return (
-    <div {...getRootProps()} className="border-2 border-dashed rounded-lg p-8 text-center">
-      <input {...getInputProps()} />
-      {uploading ? (
-        <div>Uploading...</div>
-      ) : (
-        <div>
-          <p>Drag & drop files here, or click to select</p>
-          <p className="text-sm text-gray-500">PDF, DOCX, MD, HTML files supported</p>
-        </div>
-      )}
-    </div>
+    <Dragger {...props}>
+      <p className="ant-upload-drag-icon">
+        <InboxOutlined />
+      </p>
+      <p className="ant-upload-text">Click or drag file to this area to upload</p>
+      <p className="ant-upload-hint">
+        Support for PDF, DOCX, MD, HTML, and image files
+      </p>
+    </Dragger>
   );
 }
 ```
@@ -213,7 +204,9 @@ export function UploadZone() {
     "react": "19.0.0",
     "react-dom": "19.0.0",
     "typescript": "^5.0.0",
-    "tailwindcss": "^3.4.0",
+    "antd": "^5.12.0",
+    "@ant-design/icons": "^5.2.0",
+    "@ant-design/nextjs-registry": "^1.0.0",
     "next-auth": "^5.0.0",
     "@tanstack/react-query": "^5.0.0",
     "react-hook-form": "^7.0.0",
@@ -232,6 +225,21 @@ python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 # Plus all existing dependencies from requirements.txt
 ```
+
+### UI Library (Ant Design)
+- **License**: MIT (Free & Open Source)
+- **Components**: 60+ enterprise-grade React components
+- **Features**:
+  - Professional drag-and-drop file upload
+  - Advanced data tables with sorting/filtering
+  - Form validation and layout system
+  - Modal dialogs and notifications
+  - Responsive layout components
+  - Dark/light theme support
+  - TypeScript support
+  - Accessibility compliant (WCAG)
+- **Bundle Size**: ~500KB gzipped
+- **Maintenance**: Active development by Alibaba
 
 ## Database Schema (Extended)
 
@@ -320,20 +328,20 @@ volumes:
 - [ ] API documentation with Swagger
 
 ### Phase 2: Frontend Foundation (Weeks 5-8)
-- [ ] Initialize Next.js application
-- [ ] Implement NextAuth.js authentication
-- [ ] Create responsive layout components
-- [ ] Build API integration layer
-- [ ] Add error handling and loading states
-- [ ] Implement theme system
+- [ ] Initialize Next.js application with Ant Design
+- [ ] Implement NextAuth.js authentication with Ant Design forms
+- [ ] Create responsive layout components using Ant Design Layout
+- [ ] Build API integration layer with React Query
+- [ ] Add error handling and loading states with Ant Design notifications
+- [ ] Implement theme system with Ant Design ConfigProvider
 
 ### Phase 3: Core Features (Weeks 9-14)
-- [ ] Document upload interface
-- [ ] Chat interface with real-time updates
-- [ ] Document management dashboard
-- [ ] Admin user management
-- [ ] API configuration panel
-- [ ] Database management tools
+- [ ] Document upload interface with Ant Design Upload component
+- [ ] Chat interface with Ant Design message components and real-time updates
+- [ ] Document management dashboard with Ant Design Table and Cards
+- [ ] Admin user management with Ant Design forms and modals
+- [ ] API configuration panel with Ant Design form validation
+- [ ] Database management tools with Ant Design data display components
 
 ### Phase 4: Advanced Features (Weeks 15-18)
 - [ ] Real-time WebSocket integration
@@ -373,10 +381,10 @@ volumes:
 - Concurrent users: 1000+
 
 ### User Experience
-- Mobile-responsive design
-- Real-time updates < 1 second
-- Intuitive navigation
-- Accessibility compliance
+- Mobile-responsive design with Ant Design responsive breakpoints
+- Real-time updates < 1 second with Ant Design notifications
+- Intuitive navigation with Ant Design Menu components
+- Accessibility compliance (WCAG 2.1 AA) with Ant Design built-in accessibility
 
 ### Business
 - Reduced operational costs
@@ -387,15 +395,15 @@ volumes:
 ## Next Steps
 
 ### Immediate Actions (Week 1)
-1. Setup development environment
+1. Setup development environment with Ant Design
 2. Create FastAPI proof of concept
-3. Initialize Next.js application
+3. Initialize Next.js application with Ant Design integration
 4. Define API contract between frontend and backend
 
 ### Short-term Goals (Month 1)
 1. Complete backend API implementation
-2. Build basic frontend authentication
-3. Implement document upload functionality
-4. Create basic chat interface
+2. Build basic frontend authentication with Ant Design forms
+3. Implement document upload functionality with Ant Design Upload
+4. Create basic chat interface with Ant Design message components
 
 This migration plan provides a comprehensive roadmap for transforming the Document Q&A Assistant into a production-ready enterprise application while maintaining all existing functionality and improving performance, scalability, and user experience.
