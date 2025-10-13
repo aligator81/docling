@@ -1,0 +1,5 @@
+{
+  "content": "Based on my analysis of your project, I can see you have a Document Q\\&A Assistant built with Docling, Streamlit, and OpenAI. This is a sophisticated document processing and retrieval application. Here are the best ways to install your app online:\n\nBest Deployment Options for Your Docling Application\n\n1. Cloud VPS (Recommended)\n\nPlatforms: DigitalOcean, AWS EC2, Google Cloud, Azure VMs, OVH (as mentioned in your README)\n\nSteps:\n\\# 1. Provision a VPS (Ubuntu 22.04 recommended)\n\\# 2. Install dependencies\nsudo apt update \\&\\& sudo apt upgrade -y\nsudo apt install -y python3-pip python3-venv git\n\\# 3. Clone and setup\ngit clone your-repo-url\ncd docling-knowledge-pipeline\npython3 -m venv venv\nsource venv/bin/activate\npip install -r requirements.txt\n\\# 4. Set up as systemd service (production)\nsudo nano /etc/systemd/system/docling-streamlit.service\nbash\n\n",
+  "method": "mistral_ocr",
+  "processing_time": 1.199998378753662
+}

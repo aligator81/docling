@@ -193,7 +193,7 @@ async def create_embeddings(
 
         if result.success:
             # Update document status to completed
-            document.status = "embedding"
+            document.status = "processed"
             document.processed_at = datetime.utcnow()
             db.commit()
 
@@ -298,7 +298,7 @@ async def process_document_complete(
             )
 
         # All steps successful
-        document.status = "embedding"
+        document.status = "processed"
         document.processed_at = datetime.utcnow()
         db.commit()
 

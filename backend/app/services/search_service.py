@@ -159,7 +159,7 @@ class AdvancedSearch:
             # TODO: Implement proper vector similarity search
             recent_docs = self.db.query(Document).filter(
                 Document.id != document_id,
-                Document.status == "embedding"
+                Document.status == "processed"
             ).order_by(desc(Document.processed_at)).limit(limit).all()
 
             for doc in recent_docs:

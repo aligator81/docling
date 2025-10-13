@@ -76,8 +76,8 @@ Docling is a sophisticated document processing and Q&A platform that transforms 
 
 1. **Clone the repository**
 ```bash
-git clone <repository-url>
-cd docling-app
+git clone https://github.com/your-username/docling_v2.git
+cd docling_v2
 ```
 
 2. **Backend Setup**
@@ -98,6 +98,7 @@ npm install
 ```bash
 # Copy and configure environment variables
 cp .env.example .env
+# Edit .env with your configuration
 ```
 
 5. **Start the Application**
@@ -287,6 +288,6 @@ If you encounter any issues, please:
 
 **Docling** - Transforming documents into intelligent conversations
 
-[Report Bug](https://github.com/your-repo/issues) • [Request Feature](https://github.com/your-repo/issues) • [Documentation](https://github.com/your-repo/docs)
+[Report Bug](https://github.com/your-username/docling_v2/issues) • [Request Feature](https://github.com/your-username/docling_v2/issues) • [Documentation](https://github.com/your-username/docling_v2)
 
 </div>

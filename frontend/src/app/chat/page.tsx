@@ -84,7 +84,7 @@ export default function ChatPage() {
       setDocuments(documentsData);
 
       // Auto-select all processed documents if available
-      const processedDocuments = documentsData.filter(doc => doc.status === 'embedding');
+      const processedDocuments = documentsData.filter(doc => doc.status === 'processed');
       if (processedDocuments.length > 0) {
         setSelectedDocuments(processedDocuments);
       }
@@ -136,6 +136,8 @@ export default function ChatPage() {
 
       // Handle specific error types
       if (error instanceof Error) {
+        console.log('Chat error details:', error.message);
+        
         if (error.message.includes('401')) {
           errorMessageText = 'Your session has expired. Please refresh the page and log in again.';
         } else if (error.message.includes('503')) {
@@ -144,6 +146,15 @@ export default function ChatPage() {
           errorMessageText = 'Network error. Please check your connection and try again.';
         } else if (error.message.includes('not found') || error.message.includes('404')) {
           errorMessageText = 'Some selected documents are not available. Please refresh the page and select documents again.';
+        } else if (error.message.includes('LLM API keys not configured')) {
+          errorMessageText = 'AI service is not configured. Please check API key settings.';
+        } else if (error.message.includes('No LLM provider available')) {
+          errorMessageText = 'No AI service provider is available. Please check configuration.';
+        } else if (error.message.includes('not fully processed')) {
+          errorMessageText = 'One or more documents are still processing. Please wait for processing to complete.';
+        } else {
+          // Show the actual error message for debugging
+          errorMessageText = `Error: ${error.message}`;
         }
       }
 
@@ -197,9 +208,9 @@ export default function ChatPage() {
               {selectedDocuments.length > 0 && (
                 <div className="text-right">
                   <div className={`text-sm font-medium ${
-                    selectedDocuments.every(doc => doc.status === 'embedding') ? 'text-green-600' : 'text-yellow-600'
+                    selectedDocuments.every(doc => doc.status === 'processed') ? 'text-green-600' : 'text-yellow-600'
                   }`}>
-                    Status: {selectedDocuments.every(doc => doc.status === 'embedding') ? 'All Ready' : 'Processing'}
+                    Status: {selectedDocuments.every(doc => doc.status === 'processed') ? 'All Ready' : 'Processing'}
                   </div>
                   <div className="text-xs text-gray-500">
                     {selectedDocuments.length} document{selectedDocuments.length > 1 ? 's' : ''} selected
@@ -210,9 +221,10 @@ export default function ChatPage() {
                 placeholder="Select documents"
                 mode="multiple"
                 loading={documentsLoading}
-                value={selectedDocuments.map(doc => doc.id)}
+                value={selectedDocuments.map(doc => doc.id).filter(id => id !== null && id !== undefined)}
                 onChange={(values: number[]) => {
-                  const selectedDocs = documents.filter(d => values.includes(d.id));
+                  const validValues = values.filter(id => id !== null && id !== undefined);
+                  const selectedDocs = documents.filter(d => validValues.includes(d.id));
                   setSelectedDocuments(selectedDocs);
                 }}
                 className="w-96"
@@ -220,7 +232,7 @@ export default function ChatPage() {
                 maxTagCount={3}
               >
                 {documents
-                  .filter(doc => doc.status === 'embedding')
+                  .filter(doc => doc.status === 'processed')
                   .map(document => (
                     <Select.Option key={document.id} value={document.id}>
                       <div className="flex items-center justify-between w-full">
@@ -230,7 +242,7 @@ export default function ChatPage() {
                     </Select.Option>
                   ))
                 }
-                {documents.filter(doc => doc.status === 'embedding').length === 0 && (
+                {documents.filter(doc => doc.status === 'processed').length === 0 && (
                   <Select.Option disabled>
                     No processed documents available
                   </Select.Option>

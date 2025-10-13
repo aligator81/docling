@@ -6,10 +6,62 @@ import os
 
 from ..database import get_db
 from ..models import User, Document, DocumentChunk, Embedding, ChatHistory, APISession
-from ..schemas import User as UserSchema, SystemStats, APIConfigCreate, APIConfig
-from ..auth import get_admin_user
+from ..schemas import User as UserSchema, UserCreate, SystemStats, APIConfigCreate, APIConfig, PasswordReset
+from ..auth import get_admin_user, get_super_admin_user, require_permissions, get_password_hash
 
 router = APIRouter()
+
+@router.post("/users", response_model=UserSchema)
+async def create_user(
+    user_data: UserCreate,
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db)
+):
+    """Create new user (admin only)"""
+    from ..models import User as UserModel
+
+    # Check if user already exists
+    existing_user = db.query(UserModel).filter(
+        (UserModel.username == user_data.username) | (UserModel.email == user_data.email)
+    ).first()
+
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username or email already registered"
+        )
+
+    # Role-based restrictions for user creation
+    # Admin users can only create regular users, not other admins
+    if current_user.role == "admin" and user_data.role in ["admin", "super_admin"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin users can only create regular users"
+        )
+
+    # Super admin users can create any role
+    # Validate role is one of the allowed values
+    if user_data.role not in ["user", "admin", "super_admin"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid role. Must be 'user', 'admin', or 'super_admin'"
+        )
+
+    # Hash password and create user (active by default for admin creation)
+    hashed_password = get_password_hash(user_data.password)
+    db_user = UserModel(
+        username=user_data.username,
+        email=user_data.email,
+        password_hash=hashed_password,
+        role=user_data.role,
+        is_active=True  # Admin-created users are active by default
+    )
+
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+
+    return db_user
 
 @router.get("/users", response_model=List[UserSchema])
 async def list_users(
@@ -17,8 +69,27 @@ async def list_users(
     db: Session = Depends(get_db)
 ):
     """List all users (admin only)"""
-    users = db.query(User).all()
-    return users
+    # Admin users should not see super_admin users
+    if current_user.role == "admin":
+        users = db.query(User).filter(User.role != "super_admin").all()
+    else:
+        users = db.query(User).all()
+    
+    # Convert to schema manually to handle validation issues
+    user_schemas = []
+    for user in users:
+        user_data = {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email if user.email and "@" in str(user.email) else None,
+            "role": user.role,
+            "is_active": user.is_active,
+            "created_at": user.created_at.isoformat() if user.created_at else None,
+            "last_login": user.last_login.isoformat() if user.last_login else None
+        }
+        user_schemas.append(UserSchema(**user_data))
+    
+    return user_schemas
 
 @router.get("/users/{user_id}", response_model=UserSchema)
 async def get_user(
@@ -38,15 +109,16 @@ async def get_user(
 @router.put("/users/{user_id}/role")
 async def update_user_role(
     user_id: int,
-    role: str,
+    role_data: dict,
     current_user: User = Depends(get_admin_user),
     db: Session = Depends(get_db)
 ):
     """Update user role (admin only)"""
-    if role not in ["admin", "user"]:
+    role = role_data.get("role")
+    if role not in ["admin", "user", "super_admin"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid role. Must be 'admin' or 'user'"
+            detail="Invalid role. Must be 'admin', 'user', or 'super_admin'"
         )
 
     user = db.query(User).filter(User.id == user_id).first()
@@ -54,6 +126,21 @@ async def update_user_role(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
+        )
+
+    # Role-based restrictions for user role updates
+    # Admin users can only update roles to 'user', not to 'admin' or 'super_admin'
+    if current_user.role == "admin" and role in ["admin", "super_admin"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin users can only assign 'user' role"
+        )
+
+    # Prevent admin from changing their own role
+    if user_id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot change your own role"
         )
 
     user.role = role
@@ -64,11 +151,17 @@ async def update_user_role(
 @router.put("/users/{user_id}/status")
 async def update_user_status(
     user_id: int,
-    is_active: bool,
+    status_data: dict,
     current_user: User = Depends(get_admin_user),
     db: Session = Depends(get_db)
 ):
     """Activate/deactivate user (admin only)"""
+    is_active = status_data.get("is_active")
+    if is_active is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="is_active field is required"
+        )
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(
@@ -81,6 +174,28 @@ async def update_user_status(
 
     status_text = "activated" if is_active else "deactivated"
     return {"message": f"User {status_text}"}
+
+@router.put("/users/{user_id}/password")
+async def reset_user_password(
+    user_id: int,
+    password_data: PasswordReset,
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db)
+):
+    """Reset user password (admin only)"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
+    # Hash the new password
+    hashed_password = get_password_hash(password_data.new_password)
+    user.password_hash = hashed_password
+    db.commit()
+
+    return {"message": "User password reset successfully"}
 
 @router.delete("/users/{user_id}")
 async def delete_user(

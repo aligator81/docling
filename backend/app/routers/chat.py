@@ -46,20 +46,26 @@ async def chat_with_documents(
     openai_key = os.getenv("OPENAI_API_KEY")
     mistral_key = os.getenv("MISTRAL_API_KEY")
 
+    print(f"🔑 API Key Check - OpenAI: {'✅' if openai_key else '❌'}, Mistral: {'✅' if mistral_key else '❌'}")
+
     if not openai_key and not mistral_key:
+        print("❌ No LLM API keys configured")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="LLM API keys not configured"
+            detail="LLM API keys not configured. Please configure OpenAI or Mistral API keys."
         )
 
     # Determine LLM provider
     if openai_key:
         llm_provider = "openai"
         model_name = "gpt-4o-mini"
+        print(f"🤖 Using OpenAI provider with model: {model_name}")
     elif mistral_key:
         llm_provider = "mistral"
         model_name = "mistral-large-latest"
+        print(f"🤖 Using Mistral provider with model: {model_name}")
     else:
+        print("❌ No LLM provider available despite API key check")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="No LLM provider available"
@@ -78,20 +84,24 @@ async def chat_with_documents(
             document_ids_list = message.document_ids
 
         for doc_id in document_ids_list:
-            document = db.query(Document).filter(
-                Document.id == doc_id,
-                Document.user_id == current_user.id
-            ).first()
+            # Admin and super_admin users can access any document
+            if current_user.role in ["admin", "super_admin"]:
+                document = db.query(Document).filter(Document.id == doc_id).first()
+            else:
+                document = db.query(Document).filter(
+                    Document.id == doc_id,
+                    Document.user_id == current_user.id
+                ).first()
 
             if not document:
-                print(f"DEBUG: Document with ID {doc_id} not found for user {current_user.id}")
+                print(f"DEBUG: Document with ID {doc_id} not found for user {current_user.id} (role: {current_user.role})")
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Document with ID {doc_id} not found or you don't have access to it. Please refresh the page and try again."
+                    detail=f"Document with ID {doc_id} not found or you don't have access to it. Please refresh the page and select available documents."
                 )
 
             # Check if document is fully processed
-            if document.status != "embedding":
+            if document.status != "processed":
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Document '{document.original_filename}' (ID: {doc_id}) is not fully processed yet. Current status: {document.status}. Please wait for processing to complete."
@@ -107,12 +117,12 @@ async def chat_with_documents(
                 document_ids_list = []
         else:
             document_ids_list = message.document_ids
-        # Admin users can search all documents, regular users only their own
-        user_id_filter = None if current_user.role == "admin" else current_user.id
+        # Admin and super_admin users can search all documents, regular users only their own
+        user_id_filter = None if current_user.role in ["admin", "super_admin"] else current_user.id
         context, references = await get_context_from_db(message.message, db, document_ids_list, user_id_filter)
     else:
-        # When no specific documents selected, search only current user's documents (admin can search all)
-        user_id_filter = None if current_user.role == "admin" else current_user.id
+        # When no specific documents selected, search only current user's documents (admin/super_admin can search all)
+        user_id_filter = None if current_user.role in ["admin", "super_admin"] else current_user.id
         if user_id_filter:
             # Regular users only search their own documents
             user_document_ids = [doc.id for doc in db.query(Document.id).filter(Document.user_id == current_user.id).all()]

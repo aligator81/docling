@@ -39,12 +39,26 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileMenuVisible, setMobileMenuVisible] = useState(false);
   const [user, setUser] = useState<User | null>(null);
+  const [loggingOut, setLoggingOut] = useState(false);
   const pathname = usePathname();
 
   useEffect(() => {
     // Load user data on client side only
     const userData = AuthService.getUser();
     setUser(userData);
+
+    // Force re-render when user data changes (for role updates)
+    const handleStorageChange = () => {
+      const updatedUserData = AuthService.getUser();
+      setUser(updatedUserData);
+    };
+
+    // Listen for storage changes (in case user data is updated elsewhere)
+    window.addEventListener('storage', handleStorageChange);
+
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+    };
   }, []);
 
   const menuItems = [
@@ -65,20 +79,26 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     },
   ];
 
-  // Add admin menu items if user is admin
-  if (user?.role === 'admin') {
+  // Add admin menu items if user is admin or super_admin
+  if (user?.role === 'admin' || user?.role === 'super_admin') {
     menuItems.push(
       {
         key: '/admin/users',
         icon: <TeamOutlined />,
         label: <Link href="/admin/users">Users</Link>,
-      },
-      {
-        key: '/admin/settings',
-        icon: <SettingOutlined />,
-        label: <Link href="/admin/settings">Settings</Link>,
       }
     );
+    
+    // Only super_admin can access settings
+    if (user?.role === 'super_admin') {
+      menuItems.push(
+        {
+          key: '/admin/settings',
+          icon: <SettingOutlined />,
+          label: <Link href="/admin/settings">Settings</Link>,
+        }
+      );
+    }
   }
 
   const userMenuItems = [
@@ -91,9 +111,22 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       key: 'logout',
       label: 'Logout',
       icon: <LogoutOutlined />,
-      onClick: () => {
-        AuthService.logout();
-        window.location.href = '/login';
+      onClick: async () => {
+        if (loggingOut) return; // Prevent multiple clicks
+
+        setLoggingOut(true);
+        try {
+          await AuthService.logout();
+          console.log('Logout successful');
+          // Use window.location for full page reload to ensure clean state
+          window.location.href = '/login';
+        } catch (error) {
+          console.error('Logout error:', error);
+          // Even if logout fails, force redirect to login
+          window.location.href = '/login';
+        } finally {
+          setLoggingOut(false);
+        }
       },
     },
   ];
@@ -173,9 +206,16 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             >
               <Button type="text" className="flex items-center space-x-2">
                 <Avatar icon={<UserOutlined />} />
-                <span className="hidden sm:block">{user?.username}</span>
-                {user?.role === 'admin' && (
-                  <Badge count="Admin" style={{ backgroundColor: '#667eea' }} />
+                <span className="hidden sm:block">
+                  {loggingOut ? 'Logging out...' : user?.username}
+                </span>
+                {(user?.role === 'admin' || user?.role === 'super_admin') && (
+                  <Badge
+                    count={user?.role === 'super_admin' ? 'Super Admin' : 'Admin'}
+                    style={{
+                      backgroundColor: user?.role === 'super_admin' ? '#ff4d4f' : '#667eea'
+                    }}
+                  />
                 )}
               </Button>
             </Dropdown>

@@ -1,0 +1,5 @@
+{
+  "content": "# Test Document for Extraction\n\nThis is a test document to verify that the document extraction functionality is working correctly after fixing the Docling configuration issue.\n\n## Features to Test\n\n- Text extraction from markdown files\n- Proper handling of headers and formatting\n- Content length calculation\n- Processing time measurement\n\n## Sample Content\n\nThis document contains various markdown elements including:\n\n1. Headers (H1, H2)\n2. Lists (ordered and unordered)\n3. Code blocks\n4. Bold and italic text\n\nThe extraction should preserve the structure and content of the document while converting it to plain text format.",
+  "method": "markdown_simple",
+  "processing_time": 0.00041365623474121094
+}

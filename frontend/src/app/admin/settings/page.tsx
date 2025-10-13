@@ -52,9 +52,15 @@ export default function AdminSettingsPage() {
   const router = useRouter();
 
   useEffect(() => {
-    // Check admin authentication
-    if (!AuthService.isAuthenticated() || !AuthService.isAdmin()) {
+    // Check authentication and permissions
+    if (!AuthService.isAuthenticated()) {
       router.push('/login');
+      return;
+    }
+
+    // Only super_admin can access settings
+    if (!AuthService.isSuperAdmin()) {
+      router.push('/dashboard');
       return;
     }
 

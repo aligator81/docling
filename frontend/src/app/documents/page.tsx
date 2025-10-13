@@ -90,7 +90,7 @@ export default function DocumentsPage() {
           'not processed': { color: 'default', text: 'Not Processed' },
           'extracted': { color: 'processing', text: 'Extracted' },
           'chunked': { color: 'warning', text: 'Chunked' },
-          'embedding': { color: 'success', text: 'Embedded' },
+          'processed': { color: 'success', text: 'Processed' },
         };
         const config = statusConfig[status as keyof typeof statusConfig] || { color: 'default', text: status };
         return <Tag color={config.color}>{config.text}</Tag>;
@@ -99,7 +99,7 @@ export default function DocumentsPage() {
         { text: 'Not Processed', value: 'not processed' },
         { text: 'Extracted', value: 'extracted' },
         { text: 'Chunked', value: 'chunked' },
-        { text: 'Embedded', value: 'embedding' },
+        { text: 'Processed', value: 'processed' },
       ],
       onFilter: (value: any, record: Document) => record.status === value,
     },
@@ -167,7 +167,7 @@ export default function DocumentsPage() {
               size="small"
               type="primary"
               onClick={() => handleChatWithDocument(record)}
-              disabled={record.status !== 'embedding'}
+              disabled={record.status !== 'processed'}
             >
               Chat
             </Button>
@@ -367,7 +367,7 @@ export default function DocumentsPage() {
     const documentId = Number(selectedRowKeys[0]);
     const document = documents.find(doc => doc.id === documentId);
 
-    if (document && document.status === 'embedding') {
+    if (document && document.status === 'processed') {
       router.push('/chat');
     } else {
       message.warning('Selected document must be fully embedded before chatting');
@@ -389,7 +389,7 @@ export default function DocumentsPage() {
     notProcessed: documents.filter(doc => doc.status === 'not processed').length,
     extracted: documents.filter(doc => doc.status === 'extracted').length,
     chunked: documents.filter(doc => doc.status === 'chunked').length,
-    embedded: documents.filter(doc => doc.status === 'embedding').length,
+    processed: documents.filter(doc => doc.status === 'processed').length,
     totalSize: documents.reduce((acc, doc) => acc + doc.file_size, 0),
   };
 
@@ -583,7 +583,7 @@ export default function DocumentsPage() {
                 <Option value="not processed">Not Processed</Option>
                 <Option value="extracted">Extracted</Option>
                 <Option value="chunked">Chunked</Option>
-                <Option value="embedding">Embedded</Option>
+                <Option value="processed">Processed</Option>
               </Select>
             </Col>
             <Col xs={24} sm={24} md={8}>
@@ -645,7 +645,7 @@ export default function DocumentsPage() {
                   <Text strong>Status:</Text>
                   <br />
                   <Tag color={
-                    selectedDocument.status === 'embedding' ? 'success' :
+                    selectedDocument.status === 'processed' ? 'success' :
                     selectedDocument.status === 'extracted' ? 'processing' :
                     selectedDocument.status === 'chunked' ? 'warning' : 'default'
                   }>
@@ -664,7 +664,7 @@ export default function DocumentsPage() {
                 </div>
               </div>
 
-              {selectedDocument.status === 'embedding' && (
+              {selectedDocument.status === 'processed' && (
                 <div className="mt-4 p-4 bg-green-50 rounded-lg">
                   <Text strong className="text-green-800">
                     ✅ Document fully processed and ready for questions!

@@ -12,7 +12,10 @@ from ..models import User, Document, DocumentChunk, Embedding
 from ..schemas import DocumentCreate, Document as DocumentSchema, DocumentUploadResponse
 from ..auth import get_current_active_user
 from ..config import settings
-from ..tasks import process_document_task, extract_document_task, chunk_document_task, embed_document_task
+from ..tasks import (
+    process_document_task, extract_document_task, chunk_document_task, embed_document_task,
+    get_processing_status, get_queue_statistics, background_task_manager
+)
 from ..security import FileSecurity, validate_upload_file_sync
 
 router = APIRouter()
@@ -59,24 +62,28 @@ async def upload_document(
             detail=f"Failed to save file: {str(e)}"
         )
 
-    # Initialize security validator
-    security = FileSecurity()
+    # Validate file content and security only if enabled
+    if settings.file_validation_enabled:
+        # Initialize security validator
+        security = FileSecurity()
 
-    # Validate file content and security
-    is_valid, validation_message = validate_upload_file_sync(file, security)
+        # Validate file content and security
+        is_valid, validation_message = validate_upload_file_sync(file, security)
 
-    if not is_valid:
-        # Clean up the saved file if validation fails
-        try:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-        except:
-            pass
+        if not is_valid:
+            # Clean up the saved file if validation fails
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+            except:
+                pass
 
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"File security validation failed: {validation_message}"
-        )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"File security validation failed: {validation_message}"
+            )
+    else:
+        print(f"⚠️ File validation disabled - skipping security checks for {file.filename}")
 
     # Create document record
     db_document = Document(
@@ -93,19 +100,31 @@ async def upload_document(
     db.commit()
     db.refresh(db_document)
 
-    return DocumentUploadResponse(
-        document=db_document,
-        message="Document uploaded successfully"
+    # Add to background processing queue
+    background_task_manager.add_job(
+        document_id=db_document.id,
+        user_id=current_user.id,
+        filename=file.filename
     )
 
+    # Update initial status
+    db_document.status = "queued"
+    db.commit()
+
+    return DocumentUploadResponse(
+        document=db_document,
+        message="Document uploaded successfully and queued for processing"
+    )
+
+@router.get("", response_model=List[DocumentSchema])
 @router.get("/", response_model=List[DocumentSchema])
 async def list_documents(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """List documents (user's documents for regular users, all documents for admins)"""
-    if current_user.role == "admin":
-        # Admin users can see all documents
+    if current_user.role in ["admin", "super_admin"]:
+        # Admin and super admin users can see all documents
         documents = db.query(Document).all()
     else:
         # Regular users can only see their own documents
@@ -118,11 +137,14 @@ async def get_document(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """Get a specific document"""
-    document = db.query(Document).filter(
-        Document.id == document_id,
-        Document.user_id == current_user.id
-    ).first()
+    """Get a specific document (admin/superadmin can access any document)"""
+    if current_user.role in ["admin", "super_admin"]:
+        document = db.query(Document).filter(Document.id == document_id).first()
+    else:
+        document = db.query(Document).filter(
+            Document.id == document_id,
+            Document.user_id == current_user.id
+        ).first()
 
     if not document:
         raise HTTPException(
@@ -139,8 +161,8 @@ async def delete_document(
     db: Session = Depends(get_db)
 ):
     """Delete a document and its associated data"""
-    # Allow admins to delete any document, users can only delete their own
-    if current_user.role == "admin":
+    # Allow admins and super admins to delete any document, users can only delete their own
+    if current_user.role in ["admin", "super_admin"]:
         document = db.query(Document).filter(Document.id == document_id).first()
     else:
         document = db.query(Document).filter(
@@ -196,8 +218,8 @@ async def get_document_chunks(
     db: Session = Depends(get_db)
 ):
     """Get chunks for a document"""
-    # Allow admins to view any document's chunks, users can only view their own
-    if current_user.role == "admin":
+    # Allow admins and super admins to view any document's chunks, users can only view their own
+    if current_user.role in ["admin", "super_admin"]:
         document = db.query(Document).filter(Document.id == document_id).first()
     else:
         document = db.query(Document).filter(
@@ -235,11 +257,14 @@ async def update_document_status(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """Update document processing status"""
-    document = db.query(Document).filter(
-        Document.id == document_id,
-        Document.user_id == current_user.id
-    ).first()
+    """Update document processing status (admin/superadmin can update any document)"""
+    if current_user.role in ["admin", "super_admin"]:
+        document = db.query(Document).filter(Document.id == document_id).first()
+    else:
+        document = db.query(Document).filter(
+            Document.id == document_id,
+            Document.user_id == current_user.id
+        ).first()
 
     if not document:
         raise HTTPException(
@@ -248,7 +273,7 @@ async def update_document_status(
         )
 
     new_status = status_update.get("status")
-    valid_statuses = ["not processed", "extracted", "chunked", "embedding"]
+    valid_statuses = ["not processed", "extracted", "chunked", "processed"]
 
     if new_status not in valid_statuses:
         raise HTTPException(
@@ -257,7 +282,7 @@ async def update_document_status(
         )
 
     document.status = new_status
-    if new_status == "embedding":
+    if new_status == "processed":
         document.processed_at = datetime.utcnow()
 
     db.commit()
@@ -268,18 +293,124 @@ async def update_document_status(
         "document": document
     }
 
+@router.get("/{document_id}/processing-status")
+async def get_document_processing_status(
+    document_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Get the processing status of a document"""
+    # Verify document ownership (admins can see all)
+    if current_user.role not in ["admin", "super_admin"]:
+        document = db.query(Document).filter(
+            Document.id == document_id,
+            Document.user_id == current_user.id
+        ).first()
+
+        if not document:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Document not found"
+            )
+
+    # Get processing status from background task manager
+    processing_status = get_processing_status(document_id)
+
+    if not processing_status:
+        # Document not in processing queue, return database status
+        document = db.query(Document).filter(Document.id == document_id).first()
+        if not document:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Document not found"
+            )
+
+        return {
+            "document_id": document_id,
+            "status": document.status,
+            "current_step": "not_processing",
+            "progress": 0,
+            "created_at": document.created_at.isoformat() if document.created_at else None,
+            "processed_at": document.processed_at.isoformat() if document.processed_at else None
+        }
+
+    return processing_status
+
+@router.get("/processing/queue-status")
+async def get_processing_queue_status(
+    current_user: User = Depends(get_current_active_user)
+):
+    """Get the status of the processing queue (admin only)"""
+    if current_user.role not in ["admin", "super_admin"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
+        )
+
+    return get_queue_statistics()
+
+@router.post("/{document_id}/reprocess")
+async def reprocess_document(
+    document_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Reprocess a document in the background"""
+    # Verify document ownership (admins can reprocess any document)
+    if current_user.role not in ["admin", "super_admin"]:
+        document = db.query(Document).filter(
+            Document.id == document_id,
+            Document.user_id == current_user.id
+        ).first()
+    else:
+        document = db.query(Document).filter(Document.id == document_id).first()
+
+    if not document:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found"
+        )
+
+    # Check if file exists
+    if not os.path.exists(document.file_path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document file not found on disk"
+        )
+
+    # Add to background processing queue with higher priority
+    background_task_manager.add_job(
+        document_id=document_id,
+        user_id=current_user.id,
+        filename=document.original_filename,
+        priority=2  # Higher priority for reprocessing
+    )
+
+    # Update status
+    document.status = "queued"
+    db.commit()
+
+    return {
+        "message": "Document queued for reprocessing",
+        "document_id": document_id,
+        "priority": "high"
+    }
+
 @router.post("/{document_id}/process-background")
 async def process_document_background(
     document_id: int,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """Start background processing for document"""
-    # Verify document ownership
-    document = db.query(Document).filter(
-        Document.id == document_id,
-        Document.user_id == current_user.id
-    ).first()
+    """Start background processing for document (admin/superadmin can process any document)"""
+    # Verify document ownership (admin/superadmin can process any document)
+    if current_user.role in ["admin", "super_admin"]:
+        document = db.query(Document).filter(Document.id == document_id).first()
+    else:
+        document = db.query(Document).filter(
+            Document.id == document_id,
+            Document.user_id == current_user.id
+        ).first()
 
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -304,12 +435,15 @@ async def extract_document_background(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """Start background extraction for document"""
-    # Verify document ownership
-    document = db.query(Document).filter(
-        Document.id == document_id,
-        Document.user_id == current_user.id
-    ).first()
+    """Start background extraction for document (admin/superadmin can process any document)"""
+    # Verify document ownership (admin/superadmin can process any document)
+    if current_user.role in ["admin", "super_admin"]:
+        document = db.query(Document).filter(Document.id == document_id).first()
+    else:
+        document = db.query(Document).filter(
+            Document.id == document_id,
+            Document.user_id == current_user.id
+        ).first()
 
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -334,12 +468,15 @@ async def chunk_document_background(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """Start background chunking for document"""
-    # Verify document ownership
-    document = db.query(Document).filter(
-        Document.id == document_id,
-        Document.user_id == current_user.id
-    ).first()
+    """Start background chunking for document (admin/superadmin can process any document)"""
+    # Verify document ownership (admin/superadmin can process any document)
+    if current_user.role in ["admin", "super_admin"]:
+        document = db.query(Document).filter(Document.id == document_id).first()
+    else:
+        document = db.query(Document).filter(
+            Document.id == document_id,
+            Document.user_id == current_user.id
+        ).first()
 
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -364,12 +501,15 @@ async def embed_document_background(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """Start background embedding generation for document"""
-    # Verify document ownership
-    document = db.query(Document).filter(
-        Document.id == document_id,
-        Document.user_id == current_user.id
-    ).first()
+    """Start background embedding generation for document (admin/superadmin can process any document)"""
+    # Verify document ownership (admin/superadmin can process any document)
+    if current_user.role in ["admin", "super_admin"]:
+        document = db.query(Document).filter(Document.id == document_id).first()
+    else:
+        document = db.query(Document).filter(
+            Document.id == document_id,
+            Document.user_id == current_user.id
+        ).first()
 
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -398,16 +538,20 @@ async def bulk_delete_documents(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """Delete multiple documents and their associated data"""
+    """Delete multiple documents and their associated data (admin/superadmin can delete any documents)"""
     deleted_count = 0
     errors = []
 
     for document_id in document_ids:
         try:
-            document = db.query(Document).filter(
-                Document.id == document_id,
-                Document.user_id == current_user.id
-            ).first()
+            # Allow admins and super admins to delete any document, users can only delete their own
+            if current_user.role in ["admin", "super_admin"]:
+                document = db.query(Document).filter(Document.id == document_id).first()
+            else:
+                document = db.query(Document).filter(
+                    Document.id == document_id,
+                    Document.user_id == current_user.id
+                ).first()
 
             if not document:
                 errors.append(f"Document {document_id} not found")
@@ -476,20 +620,24 @@ async def bulk_embed_documents(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """Mark multiple documents as embedded"""
-    return await bulk_update_document_status(document_ids, "embedding", current_user, db)
+    """Mark multiple documents as processed"""
+    return await bulk_update_document_status(document_ids, "processed", current_user, db)
 
 async def bulk_update_document_status(document_ids: List[int], new_status: str, current_user: User, db: Session):
-    """Internal function to update status of multiple documents"""
+    """Internal function to update status of multiple documents (admin/superadmin can update any documents)"""
     updated_count = 0
     errors = []
 
     for document_id in document_ids:
         try:
-            document = db.query(Document).filter(
-                Document.id == document_id,
-                Document.user_id == current_user.id
-            ).first()
+            # Allow admins and super admins to update any document, users can only update their own
+            if current_user.role in ["admin", "super_admin"]:
+                document = db.query(Document).filter(Document.id == document_id).first()
+            else:
+                document = db.query(Document).filter(
+                    Document.id == document_id,
+                    Document.user_id == current_user.id
+                ).first()
 
             if not document:
                 errors.append(f"Document {document_id} not found")
@@ -508,7 +656,7 @@ async def bulk_update_document_status(document_ids: List[int], new_status: str, 
                 continue
 
             document.status = new_status
-            if new_status == "embedding":
+            if new_status == "processed":
                 document.processed_at = datetime.utcnow()
 
             updated_count += 1
@@ -530,14 +678,17 @@ async def extract_document_content(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """Extract content from uploaded document"""
+    """Extract content from uploaded document (admin/superadmin can process any document)"""
     from ..services.document_processor import DocumentProcessor
 
-    # Get document
-    document = db.query(Document).filter(
-        Document.id == document_id,
-        Document.user_id == current_user.id
-    ).first()
+    # Get document (admin/superadmin can access any document)
+    if current_user.role in ["admin", "super_admin"]:
+        document = db.query(Document).filter(Document.id == document_id).first()
+    else:
+        document = db.query(Document).filter(
+            Document.id == document_id,
+            Document.user_id == current_user.id
+        ).first()
 
     if not document:
         raise HTTPException(
@@ -592,14 +743,17 @@ async def chunk_document_content(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """Create chunks from extracted document content"""
+    """Create chunks from extracted document content (admin/superadmin can process any document)"""
     from ..services.document_chunker import DocumentChunker
 
-    # Get document
-    document = db.query(Document).filter(
-        Document.id == document_id,
-        Document.user_id == current_user.id
-    ).first()
+    # Get document (admin/superadmin can access any document)
+    if current_user.role in ["admin", "super_admin"]:
+        document = db.query(Document).filter(Document.id == document_id).first()
+    else:
+        document = db.query(Document).filter(
+            Document.id == document_id,
+            Document.user_id == current_user.id
+        ).first()
 
     if not document:
         raise HTTPException(
@@ -653,14 +807,17 @@ async def embed_document_chunks(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """Generate embeddings for document chunks"""
+    """Generate embeddings for document chunks (admin/superadmin can process any document)"""
     from ..services.embedding_service import EmbeddingService
 
-    # Get document
-    document = db.query(Document).filter(
-        Document.id == document_id,
-        Document.user_id == current_user.id
-    ).first()
+    # Get document (admin/superadmin can access any document)
+    if current_user.role in ["admin", "super_admin"]:
+        document = db.query(Document).filter(Document.id == document_id).first()
+    else:
+        document = db.query(Document).filter(
+            Document.id == document_id,
+            Document.user_id == current_user.id
+        ).first()
 
     if not document:
         raise HTTPException(
@@ -675,10 +832,17 @@ async def embed_document_chunks(
     ).count()
 
     if chunk_count == 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Document has no chunks. Please chunk first."
-        )
+        # Also check if document has content - if not, it needs extraction first
+        if not document.content or len(document.content.strip()) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Document has no extracted content. Please extract content first."
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Document has no chunks. Please chunk first."
+            )
 
     # Initialize embedding service
     embedding_service = EmbeddingService()
@@ -689,7 +853,7 @@ async def embed_document_chunks(
 
         if result.success:
             # Update document status to final state
-            document.status = "embedding"
+            document.status = "processed"
             document.processed_at = datetime.utcnow()
             db.commit()
 
@@ -741,7 +905,7 @@ async def update_document_status_internal(document_id: int, new_status: str, cur
         )
 
     document.status = new_status
-    if new_status == "embedding":
+    if new_status == "processed":
         document.processed_at = datetime.utcnow()
 
     db.commit()

@@ -29,6 +29,7 @@ import {
   LockOutlined,
   UnlockOutlined,
   ReloadOutlined,
+  KeyOutlined,
 } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
 import { AuthService } from '@/lib/auth';
@@ -43,15 +44,18 @@ interface UserFormData {
   username: string;
   email?: string;
   password: string;
-  role: 'admin' | 'user';
+  role: 'admin' | 'user' | 'super_admin';
 }
 
 export default function AdminUsersPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalVisible, setModalVisible] = useState(false);
+  const [passwordModalVisible, setPasswordModalVisible] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [passwordUser, setPasswordUser] = useState<User | null>(null);
   const [form] = Form.useForm();
+  const [passwordForm] = Form.useForm();
   const router = useRouter();
 
   const columns = [
@@ -72,12 +76,30 @@ export default function AdminUsersPage() {
       title: 'Role',
       dataIndex: 'role',
       key: 'role',
-      render: (role: string) => (
-        <Tag color={role === 'admin' ? 'gold' : 'blue'}>
-          {role === 'admin' && <CrownOutlined />}
-          {role}
-        </Tag>
-      ),
+      render: (role: string) => {
+        const getRoleColor = (role: string) => {
+          switch (role) {
+            case 'super_admin': return 'red';
+            case 'admin': return 'gold';
+            default: return 'blue';
+          }
+        };
+
+        const getRoleIcon = (role: string) => {
+          switch (role) {
+            case 'super_admin': return <CrownOutlined />;
+            case 'admin': return <CrownOutlined />;
+            default: return null;
+          }
+        };
+
+        return (
+          <Tag color={getRoleColor(role)}>
+            {getRoleIcon(role)}
+            {role.replace('_', ' ')}
+          </Tag>
+        );
+      },
     },
     {
       title: 'Status',
@@ -132,6 +154,13 @@ export default function AdminUsersPage() {
               {record.is_active ? 'Deactivate' : 'Activate'}
             </Button>
           </Tooltip>
+          <Tooltip title="Reset Password">
+            <Button
+              size="small"
+              icon={<KeyOutlined />}
+              onClick={() => handleResetPassword(record)}
+            />
+          </Tooltip>
           {record.id !== AuthService.getUser()?.id && (
             <Popconfirm
               title="Delete user"
@@ -149,9 +178,15 @@ export default function AdminUsersPage() {
   ];
 
   useEffect(() => {
-    // Check admin authentication
-    if (!AuthService.isAuthenticated() || !AuthService.isAdmin()) {
+    // Check authentication and permissions
+    if (!AuthService.isAuthenticated()) {
       router.push('/login');
+      return;
+    }
+
+    // Check if user is admin or super_admin
+    if (!AuthService.isAdmin()) {
+      router.push('/dashboard');
       return;
     }
 
@@ -161,7 +196,11 @@ export default function AdminUsersPage() {
   const loadUsers = async () => {
     try {
       const usersData = await api.getUsers();
-      setUsers(usersData);
+      // Filter out super_admin users if current user is admin (not super_admin)
+      const filteredUsers = AuthService.isSuperAdmin()
+        ? usersData
+        : usersData.filter(user => user.role !== 'super_admin');
+      setUsers(filteredUsers);
     } catch (error) {
       message.error('Failed to load users');
     } finally {
@@ -192,12 +231,33 @@ export default function AdminUsersPage() {
       if (editingUser) {
         // Update existing user
         if (values.role !== editingUser.role) {
+          // Check if admin is trying to assign admin/super_admin role
+          if (AuthService.isAdmin() && !AuthService.isSuperAdmin() && values.role !== 'user') {
+            message.error('Admin users can only assign "user" role');
+            return;
+          }
           await api.updateUserRole(editingUser.id, values.role);
           message.success('User role updated successfully');
         }
       } else {
-        // Create new user (this would need a backend endpoint)
-        message.info('User creation endpoint needs to be implemented');
+        // Create new user
+        try {
+          const newUser = await api.createUser({
+            username: values.username,
+            email: values.email,
+            password: values.password,
+            role: values.role,
+          });
+          message.success('User created successfully');
+        } catch (error: any) {
+          // Handle specific error cases
+          if (error.message?.includes('already registered')) {
+            message.error('Username or email already exists');
+          } else {
+            message.error('Failed to create user');
+          }
+          throw error; // Re-throw to prevent modal from closing
+        }
       }
 
       setModalVisible(false);
@@ -228,10 +288,29 @@ export default function AdminUsersPage() {
     }
   };
 
+  const handleResetPassword = (user: User) => {
+    setPasswordUser(user);
+    passwordForm.resetFields();
+    setPasswordModalVisible(true);
+  };
+
+  const handlePasswordModalOk = async () => {
+    try {
+      const values = await passwordForm.validateFields();
+      await api.resetUserPassword(passwordUser!.id, values.new_password);
+      message.success('Password reset successfully');
+      setPasswordModalVisible(false);
+      passwordForm.resetFields();
+    } catch (error) {
+      message.error('Failed to reset password');
+    }
+  };
+
   const stats = {
     totalUsers: users.length,
     activeUsers: users.filter(user => user.is_active).length,
     adminUsers: users.filter(user => user.role === 'admin').length,
+    superAdminUsers: AuthService.isSuperAdmin() ? users.filter(user => user.role === 'super_admin').length : 0,
     recentUsers: users.filter(user => {
       const createdDate = new Date(user.created_at);
       const weekAgo = new Date();
@@ -390,12 +469,75 @@ export default function AdminUsersPage() {
                 <Option value="user">
                   <Tag color="blue">User</Tag>
                 </Option>
-                <Option value="admin">
-                  <Tag color="gold">
-                    <CrownOutlined /> Admin
-                  </Tag>
-                </Option>
+                {AuthService.isSuperAdmin() && (
+                  <>
+                    <Option value="admin">
+                      <Tag color="gold">
+                        <CrownOutlined /> Admin
+                      </Tag>
+                    </Option>
+                    <Option value="super_admin">
+                      <Tag color="red">
+                        <CrownOutlined /> Super Admin
+                      </Tag>
+                    </Option>
+                  </>
+                )}
+                {AuthService.isAdmin() && !AuthService.isSuperAdmin() && (
+                  <Option value="admin" disabled>
+                    <Tag color="gold">
+                      <CrownOutlined /> Admin (Super Admin Only)
+                    </Tag>
+                  </Option>
+                )}
               </Select>
+            </Form.Item>
+          </Form>
+        </Modal>
+
+        {/* Password Reset Modal */}
+        <Modal
+          title={`Reset Password for ${passwordUser?.username}`}
+          open={passwordModalVisible}
+          onOk={handlePasswordModalOk}
+          onCancel={() => {
+            setPasswordModalVisible(false);
+            passwordForm.resetFields();
+          }}
+          width={400}
+        >
+          <Form
+            form={passwordForm}
+            layout="vertical"
+          >
+            <Form.Item
+              name="new_password"
+              label="New Password"
+              rules={[
+                { required: true, message: 'Please enter a new password' },
+                { min: 8, message: 'Password must be at least 8 characters' },
+              ]}
+            >
+              <Input.Password placeholder="Enter new password" />
+            </Form.Item>
+
+            <Form.Item
+              name="confirm_password"
+              label="Confirm Password"
+              dependencies={['new_password']}
+              rules={[
+                { required: true, message: 'Please confirm the password' },
+                ({ getFieldValue }) => ({
+                  validator(_, value) {
+                    if (!value || getFieldValue('new_password') === value) {
+                      return Promise.resolve();
+                    }
+                    return Promise.reject(new Error('Passwords do not match'));
+                  },
+                }),
+              ]}
+            >
+              <Input.Password placeholder="Confirm new password" />
             </Form.Item>
           </Form>
         </Modal>

@@ -10,7 +10,8 @@ from ..auth import (
     get_password_hash,
     create_access_token,
     verify_token,
-    get_current_active_user
+    get_current_active_user,
+    get_current_user_data
 )
 from ..config import settings
 
@@ -122,7 +123,7 @@ async def logout(
 
 @router.get("/me")
 async def get_current_user(
-    current_user = Depends(get_current_active_user)
+    current_user = Depends(get_current_user_data)
 ):
     """Get current user information"""
     return current_user

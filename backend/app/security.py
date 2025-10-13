@@ -364,13 +364,16 @@ class FileSecurity:
 
 def validate_upload_file_sync(file: UploadFile, security: FileSecurity) -> tuple[bool, str]:
     """Synchronous file validation for uploaded files"""
+    import tempfile
+    
     try:
-        # Save file temporarily
-        temp_path = f"/tmp/temp_{uuid.uuid4()}_{file.filename}"
-
-        with open(temp_path, "wb") as buffer:
+        # Create a temporary file with proper cross-platform handling
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{file.filename}") as temp_file:
+            temp_path = temp_file.name
+            
+            # Write file content
             content = file.file.read()
-            buffer.write(content)
+            temp_file.write(content)
 
         # Validate file
         is_valid = security.validate_file_content(temp_path)
@@ -387,6 +390,13 @@ def validate_upload_file_sync(file: UploadFile, security: FileSecurity) -> tuple
             return False, "File validation failed"
 
     except Exception as e:
+        # Clean up temp file if it exists
+        try:
+            if 'temp_path' in locals() and os.path.exists(temp_path):
+                os.remove(temp_path)
+        except:
+            pass
+            
         return False, f"Validation error: {str(e)}"
 
 # Global security instance

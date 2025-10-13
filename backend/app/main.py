@@ -7,6 +7,9 @@ from .database import engine, SessionLocal
 from .models import Base
 import os
 import logging
+import signal
+import sys
+import atexit
 
 # Import enhanced features
 try:
@@ -37,10 +40,12 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:3002",
         "http://localhost:3003",
         "http://127.0.0.1:3000",
-        "http://localhost:3001",
         "http://127.0.0.1:3001",
+        "http://127.0.0.1:3002",
         "https://localhost:3000"
     ],
     allow_credentials=True,
@@ -58,6 +63,7 @@ app.mount("/uploads", StaticFiles(directory="data/uploads"), name="uploads")
 # Include routers
 from .routers import auth, documents, chat, admin
 from .routers.processing import router as processing_router
+from .tasks import background_task_manager
 
 app.include_router(
     auth.router,
@@ -165,3 +171,54 @@ async def global_exception_handler(request, exc: Exception):
         "message": "An unexpected error occurred",
         "request_id": "unknown"
     }
+
+# Shutdown handling for background tasks
+def shutdown_handler():
+    """Handle graceful shutdown"""
+    print("🛑 Received shutdown signal, stopping background task manager...")
+    background_task_manager.shutdown()
+
+def signal_handler(sig, frame):
+    """Handle shutdown signals"""
+    print(f"🛑 Received signal {sig}, shutting down gracefully...")
+    shutdown_handler()
+    sys.exit(0)
+
+# Register shutdown handlers
+atexit.register(shutdown_handler)
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
+# Enhanced health check with background processing status
+@app.get("/health/detailed")
+async def detailed_health_check():
+    """Enhanced health check with background processing status"""
+    try:
+        # Basic database connection test
+        db = SessionLocal()
+        db.execute(text("SELECT 1"))
+        db.close()
+
+        # Get background processing queue status
+        queue_stats = background_task_manager.get_queue_stats()
+
+        return {
+            "status": "healthy",
+            "database": "connected",
+            "background_processing": {
+                "queue_size": queue_stats["queue_size"],
+                "active_jobs": queue_stats["active_jobs"],
+                "max_workers": queue_stats["max_workers"]
+            },
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        structured_logger.log_error(
+            "detailed_health_check_failed",
+            str(e),
+            endpoint="/health/detailed"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Health check failed: {str(e)}"
+        )

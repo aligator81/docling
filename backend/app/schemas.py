@@ -16,7 +16,7 @@ class UserLogin(BaseModel):
 
 class User(UserBase):
     id: int
-    role: str
+    role: str  # user, admin, super_admin
     is_active: bool
     created_at: datetime
     last_login: Optional[datetime] = None
@@ -45,6 +45,7 @@ class DocumentCreate(DocumentBase):
 class Document(DocumentBase):
     id: int
     user_id: int
+    file_path: str
     status: str
     created_at: datetime
     processed_at: Optional[datetime] = None
@@ -71,6 +72,9 @@ class ChatResponse(BaseModel):
 class UserManagement(BaseModel):
     user_id: int
     action: str  # activate, deactivate, promote, demote
+
+class PasswordReset(BaseModel):
+    new_password: str
 
 class APIConfigBase(BaseModel):
     provider: str  # openai, mistral

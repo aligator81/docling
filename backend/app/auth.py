@@ -89,6 +89,23 @@ def get_current_user(
 
     return user
 
+def get_current_user_data(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
+    """Get current user data without sensitive fields"""
+    user = get_current_user(token, db)
+    
+    return {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "role": user.role,
+        "is_active": user.is_active,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+        "last_login": user.last_login.isoformat() if user.last_login else None
+    }
+
 def get_current_active_user(current_user = Depends(get_current_user)):
     """Dependency to get current active user"""
     if not current_user.is_active:
@@ -97,9 +114,40 @@ def get_current_active_user(current_user = Depends(get_current_user)):
 
 def get_admin_user(current_user = Depends(get_current_active_user)):
     """Dependency to ensure user is admin"""
-    if current_user.role != "admin":
+    if current_user.role not in ["admin", "super_admin"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not enough permissions"
         )
     return current_user
+
+def get_super_admin_user(current_user = Depends(get_current_active_user)):
+    """Dependency to ensure user is super admin"""
+    if current_user.role != "super_admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Super admin access required"
+        )
+    return current_user
+
+def check_role_permission(user_role: str, required_permissions: list) -> bool:
+    """Check if user role has required permissions"""
+    role_permissions = {
+        "user": ["dashboard", "document", "chat"],
+        "admin": ["dashboard", "document", "chat", "users"],
+        "super_admin": ["dashboard", "document", "chat", "users", "admin", "system"]  # full access
+    }
+
+    user_permissions = role_permissions.get(user_role, [])
+    return all(permission in user_permissions for permission in required_permissions)
+
+def require_permissions(permissions: list):
+    """Dependency factory to require specific permissions"""
+    def permission_checker(current_user = Depends(get_current_active_user)):
+        if not check_role_permission(current_user.role, permissions):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions"
+            )
+        return current_user
+    return permission_checker

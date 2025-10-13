@@ -36,9 +36,13 @@ export default function DashboardPage() {
     loadDashboardData();
   }, [router]);
 
-  // Debug logging
-  console.log('Dashboard loaded, user authenticated:', AuthService.isAuthenticated());
-  console.log('User data:', AuthService.getUser());
+  // Debug logging - only in client side
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      console.log('Dashboard loaded, user authenticated:', AuthService.isAuthenticated());
+      console.log('User data:', AuthService.getUser());
+    }
+  }, []);
 
   const loadDashboardData = async () => {
     try {
@@ -103,11 +107,11 @@ export default function DashboardPage() {
   }
 
   // If no user data but authenticated, use localStorage data
-  const displayUser = user || AuthService.getUser();
+  const displayUser = user || (typeof window !== 'undefined' ? AuthService.getUser() : null);
 
   const stats = {
     totalDocuments: documents.length,
-    processedDocuments: documents.filter(doc => doc.status === 'embedding').length,
+    processedDocuments: documents.filter(doc => doc.status === 'processed').length,
     totalSize: documents.reduce((acc, doc) => acc + doc.file_size, 0),
   };
 
@@ -118,7 +122,7 @@ export default function DashboardPage() {
         <div className="text-center">
           <Title level={2}>Welcome back, {displayUser?.username}!</Title>
           <Text type="secondary">
-            {displayUser?.role === 'admin' ? 'Administrator Dashboard' : 'Your Document Q&A Dashboard'}
+            {displayUser?.role === 'admin' || displayUser?.role === 'super_admin' ? 'Administrator Dashboard' : 'Your Document Q&A Dashboard'}
           </Text>
         </div>
 
@@ -161,9 +165,16 @@ export default function DashboardPage() {
             <Card>
               <Statistic
                 title="Your Role"
-                value={displayUser?.role === 'admin' ? 'Admin' : 'User'}
+                value={
+                  displayUser?.role === 'super_admin' ? 'Super Admin' :
+                  displayUser?.role === 'admin' ? 'Admin' : 'User'
+                }
                 prefix={<UserOutlined />}
-                valueStyle={{ color: displayUser?.role === 'admin' ? '#722ed1' : '#1890ff' }}
+                valueStyle={{
+                  color:
+                    displayUser?.role === 'super_admin' ? '#ff4d4f' :
+                    displayUser?.role === 'admin' ? '#722ed1' : '#1890ff'
+                }}
               />
             </Card>
           </Col>

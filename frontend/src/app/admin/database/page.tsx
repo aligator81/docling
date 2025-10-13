@@ -53,9 +53,15 @@ export default function AdminDatabasePage() {
   const router = useRouter();
 
   useEffect(() => {
-    // Check admin authentication
-    if (!AuthService.isAuthenticated() || !AuthService.isAdmin()) {
+    // Check authentication and permissions
+    if (!AuthService.isAuthenticated()) {
       router.push('/login');
+      return;
+    }
+
+    // Check if user is admin or super_admin
+    if (!AuthService.isAdmin()) {
+      router.push('/dashboard');
       return;
     }
 

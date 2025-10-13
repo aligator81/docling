@@ -11,7 +11,7 @@ class User(Base):
     username = Column(String(50), unique=True, index=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
     email = Column(String(255), unique=True, index=True)
-    role = Column(String(20), default="user", nullable=False)
+    role = Column(String(20), default="user", nullable=False)  # user, admin, super_admin
     created_at = Column(DateTime, default=func.now(), nullable=False)
     last_login = Column(DateTime)
     is_active = Column(Boolean, default=True, nullable=False)
@@ -30,7 +30,7 @@ class Document(Base):
     file_size = Column(Integer, nullable=False)
     mime_type = Column(String(100), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    status = Column(String(20), default="not processed", nullable=False)  # not processed, extracted, chunked, embedding
+    status = Column(String(20), default="not processed", nullable=False)  # not processed, extracted, chunked, processed
     created_at = Column(DateTime, default=func.now(), nullable=False)
     processed_at = Column(DateTime)
 

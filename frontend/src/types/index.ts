@@ -10,7 +10,7 @@ export interface User {
   id: number;
   username: string;
   email?: string;
-  role: 'admin' | 'user';
+  role: 'admin' | 'user' | 'super_admin';
   is_active: boolean;
   created_at: string;
   last_login?: string;
@@ -30,7 +30,7 @@ export interface Document {
   file_size: number;
   mime_type: string;
   user_id: number;
-  status: 'not processed' | 'extracted' | 'chunked' | 'embedding';
+  status: 'not processed' | 'extracted' | 'chunked' | 'processed';
   created_at: string;
   processed_at?: string;
 }
