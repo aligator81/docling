@@ -32,7 +32,9 @@ app = FastAPI(
     description="Enterprise Document Q&A System API with Advanced Features",
     version="2.0.0",
     docs_url="/api/docs",
-    redoc_url="/api/redoc"
+    redoc_url="/api/redoc",
+    # Increase maximum request body size for larger file uploads
+    max_request_size=52428800  # 50MB
 )
 
 # CORS for frontend integration (enhanced)

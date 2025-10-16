@@ -100,20 +100,21 @@ async def upload_document(
     db.commit()
     db.refresh(db_document)
 
-    # Add to background processing queue
-    background_task_manager.add_job(
-        document_id=db_document.id,
-        user_id=current_user.id,
-        filename=file.filename
-    )
+    # Don't auto-process - keep as "not processed" so user can manually trigger processing
+    # This allows the "Process File" button to appear in the frontend
+    # background_task_manager.add_job(
+    #     document_id=db_document.id,
+    #     user_id=current_user.id,
+    #     filename=file.filename
+    # )
 
-    # Update initial status
-    db_document.status = "queued"
-    db.commit()
+    # Keep status as "not processed" for manual processing
+    # db_document.status = "queued"
+    # db.commit()
 
     return DocumentUploadResponse(
         document=db_document,
-        message="Document uploaded successfully and queued for processing"
+        message="Document uploaded successfully. Use the 'Process File' button to extract, chunk, and embed."
     )
 
 @router.get("", response_model=List[DocumentSchema])

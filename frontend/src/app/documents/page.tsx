@@ -18,6 +18,8 @@ import {
   Row,
   Col,
   Statistic,
+  Progress,
+  notification,
 } from 'antd';
 import {
   UploadOutlined,
@@ -57,6 +59,31 @@ export default function DocumentsPage() {
     bulkEmbed: false,
     bulkDelete: false,
   });
+  
+  // Progress tracking state
+  const [processingProgress, setProcessingProgress] = useState<{
+    documentId: number | null;
+    isProcessing: boolean;
+    currentStage: 'extract' | 'chunk' | 'embed' | 'complete' | null;
+    progress: number;
+    chunksCreated?: number;
+    embeddingsCreated?: number;
+    processingTime?: number;
+  }>({
+    documentId: null,
+    isProcessing: false,
+    currentStage: null,
+    progress: 0,
+  });
+
+  // Completion notification state
+  const [completionModalVisible, setCompletionModalVisible] = useState(false);
+  const [completionStats, setCompletionStats] = useState<{
+    chunksCreated: number;
+    embeddingsCreated: number;
+    processingTime: number;
+  } | null>(null);
+
   const router = useRouter();
 
   const columns = [
@@ -123,19 +150,22 @@ export default function DocumentsPage() {
             />
           </Tooltip>
 
-          {/* Processing buttons based on current status */}
+          {/* Single Process File button for unprocessed documents */}
           {record.status === 'not processed' && (
-            <Tooltip title="Extract document">
+            <Tooltip title="Process document (Extract → Chunk → Embed)">
               <Button
                 size="small"
                 type="primary"
-                onClick={() => handleDocumentAction(record.id, 'extract')}
+                onClick={() => handleProcessDocumentComplete(record.id)}
+                loading={processingProgress.isProcessing && processingProgress.documentId === record.id}
+                disabled={processingProgress.isProcessing && processingProgress.documentId !== record.id}
               >
-                Extract
+                🚀 Process File
               </Button>
             </Tooltip>
           )}
 
+          {/* Individual processing buttons for intermediate states */}
           {(record.status === 'not processed' || record.status === 'extracted') && (
             <Tooltip title="Chunk document">
               <Button
@@ -312,6 +342,102 @@ export default function DocumentsPage() {
       console.error(`${action} error:`, error);
     }
   };
+
+  const handleProcessDocumentComplete = async (documentId: number) => {
+    try {
+      // Reset progress state
+      setProcessingProgress({
+        documentId,
+        isProcessing: true,
+        currentStage: 'extract',
+        progress: 0,
+      });
+
+      // Start the complete processing pipeline
+      const result = await api.processDocumentComplete(documentId);
+
+      if (result.success) {
+        // Update progress to complete
+        setProcessingProgress({
+          documentId,
+          isProcessing: false,
+          currentStage: 'complete',
+          progress: 100,
+          chunksCreated: result.metadata?.chunks_created,
+          embeddingsCreated: result.metadata?.embeddings_created,
+          processingTime: result.processing_time,
+        });
+
+        // Show completion notification
+        setCompletionStats({
+          chunksCreated: result.metadata?.chunks_created || 0,
+          embeddingsCreated: result.metadata?.embeddings_created || 0,
+          processingTime: result.processing_time || 0,
+        });
+        setCompletionModalVisible(true);
+
+        message.success('Document processed successfully!');
+        
+        // Refresh documents list
+        const updatedDocuments = await api.getDocuments();
+        setDocuments(updatedDocuments);
+      } else {
+        setProcessingProgress({
+          documentId: null,
+          isProcessing: false,
+          currentStage: null,
+          progress: 0,
+        });
+        message.error('Document processing failed');
+      }
+    } catch (error) {
+      setProcessingProgress({
+        documentId: null,
+        isProcessing: false,
+        currentStage: null,
+        progress: 0,
+      });
+      message.error('Failed to process document');
+      console.error('Process document error:', error);
+    }
+  };
+
+  // Simulate progress updates (in real implementation, this would come from WebSocket or polling)
+  useEffect(() => {
+    if (processingProgress.isProcessing && processingProgress.currentStage) {
+      const interval = setInterval(() => {
+        setProcessingProgress(prev => {
+          if (!prev.isProcessing) return prev;
+          
+          let newProgress = prev.progress;
+          let newStage = prev.currentStage;
+          
+          // Simulate progress through stages
+          if (prev.currentStage === 'extract' && prev.progress < 33) {
+            newProgress = Math.min(33, prev.progress + 5);
+          } else if (prev.currentStage === 'extract' && prev.progress >= 33) {
+            newStage = 'chunk';
+            newProgress = 33;
+          } else if (prev.currentStage === 'chunk' && prev.progress < 66) {
+            newProgress = Math.min(66, prev.progress + 5);
+          } else if (prev.currentStage === 'chunk' && prev.progress >= 66) {
+            newStage = 'embed';
+            newProgress = 66;
+          } else if (prev.currentStage === 'embed' && prev.progress < 100) {
+            newProgress = Math.min(100, prev.progress + 5);
+          }
+          
+          return {
+            ...prev,
+            currentStage: newStage,
+            progress: newProgress,
+          };
+        });
+      }, 1000);
+
+      return () => clearInterval(interval);
+    }
+  }, [processingProgress.isProcessing, processingProgress.currentStage]);
 
 
   const handleBulkAction = async (action: 'extract' | 'chunk' | 'embed' | 'delete') => {
@@ -539,6 +665,49 @@ export default function DocumentsPage() {
           </Card>
         )}
 
+        {/* Progress Bar for Document Processing */}
+        {processingProgress.isProcessing && (
+          <Card title="🔄 Processing Document" className="border-blue-200">
+            <div className="space-y-4">
+              <div className="flex justify-between items-center">
+                <Text strong>
+                  {processingProgress.currentStage === 'extract' && '📄 Extracting document...'}
+                  {processingProgress.currentStage === 'chunk' && '📦 Chunking document...'}
+                  {processingProgress.currentStage === 'embed' && '🧠 Creating embeddings...'}
+                  {processingProgress.currentStage === 'complete' && '✅ Processing complete!'}
+                </Text>
+                <Text type="secondary">{processingProgress.progress}%</Text>
+              </div>
+              
+              <Progress
+                percent={processingProgress.progress}
+                status={processingProgress.currentStage === 'complete' ? 'success' : 'active'}
+                strokeColor={{
+                  '0%': '#108ee9',
+                  '100%': '#87d068',
+                }}
+              />
+              
+              <div className="grid grid-cols-3 gap-4 text-center">
+                <div className={`p-2 rounded ${processingProgress.currentStage === 'extract' ? 'bg-blue-100 border border-blue-300' : 'bg-gray-50'}`}>
+                  <Text strong className={processingProgress.currentStage === 'extract' ? 'text-blue-600' : 'text-gray-500'}>
+                    Extraction
+                  </Text>
+                </div>
+                <div className={`p-2 rounded ${processingProgress.currentStage === 'chunk' ? 'bg-orange-100 border border-orange-300' : 'bg-gray-50'}`}>
+                  <Text strong className={processingProgress.currentStage === 'chunk' ? 'text-orange-600' : 'text-gray-500'}>
+                    Chunking
+                  </Text>
+                </div>
+                <div className={`p-2 rounded ${processingProgress.currentStage === 'embed' ? 'bg-green-100 border border-green-300' : 'bg-gray-50'}`}>
+                  <Text strong className={processingProgress.currentStage === 'embed' ? 'text-green-600' : 'text-gray-500'}>
+                    Embedding
+                  </Text>
+                </div>
+              </div>
+            </div>
+          </Card>
+        )}
 
         {/* Upload Section */}
         <Card title="📁 Upload New Document">
@@ -695,6 +864,74 @@ export default function DocumentsPage() {
                   </Text>
                 </div>
               )}
+            </div>
+          )}
+        </Modal>
+
+        {/* Completion Notification Modal */}
+        <Modal
+          title="🎉 Document Processing Complete!"
+          open={completionModalVisible}
+          onCancel={() => setCompletionModalVisible(false)}
+          footer={[
+            <Button key="close" onClick={() => setCompletionModalVisible(false)}>
+              Close
+            </Button>,
+            <Button
+              key="chat"
+              type="primary"
+              onClick={() => {
+                setCompletionModalVisible(false);
+                // Navigate to chat with the processed document
+                if (processingProgress.documentId) {
+                  const document = documents.find(doc => doc.id === processingProgress.documentId);
+                  if (document) handleChatWithDocument(document);
+                }
+              }}
+            >
+              Chat with Document
+            </Button>,
+          ]}
+          width={500}
+        >
+          {completionStats && (
+            <div className="space-y-4">
+              <div className="p-4 bg-green-50 rounded-lg">
+                <Text strong className="text-green-800 text-lg">
+                  ✅ Successfully processed your document!
+                </Text>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-4">
+                <div className="text-center p-3 bg-blue-50 rounded-lg">
+                  <Text strong className="text-blue-700 text-xl">
+                    {completionStats.chunksCreated}
+                  </Text>
+                  <br />
+                  <Text type="secondary">Chunks Created</Text>
+                </div>
+                
+                <div className="text-center p-3 bg-purple-50 rounded-lg">
+                  <Text strong className="text-purple-700 text-xl">
+                    {completionStats.embeddingsCreated}
+                  </Text>
+                  <br />
+                  <Text type="secondary">Embeddings Generated</Text>
+                </div>
+              </div>
+              
+              <div className="text-center p-3 bg-orange-50 rounded-lg">
+                <Text strong className="text-orange-700">
+                  ⏱️ Total Processing Time: {(completionStats.processingTime / 60).toFixed(1)} minutes
+                </Text>
+              </div>
+              
+              <div className="mt-4 p-3 bg-gray-50 rounded-lg">
+                <Text type="secondary">
+                  Your document is now ready for intelligent conversations.
+                  Click "Chat with Document" to start asking questions!
+                </Text>
+              </div>
             </div>
           )}
         </Modal>

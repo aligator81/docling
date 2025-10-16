@@ -37,5 +37,7 @@ if __name__ == "__main__":
         workers=workers,
         reload=reload,
         access_log=True,
-        log_level="info"
+        log_level="info",
+        # Increase maximum request size for larger file uploads
+        limit_max_requests=52428800  # 50MB
     )

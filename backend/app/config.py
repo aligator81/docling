@@ -4,7 +4,8 @@ import json
 from dotenv import load_dotenv
 from typing import List, Optional
 
-load_dotenv()
+# Load environment variables from .env file in the project root
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '.env'))
 
 class Settings(BaseSettings):
     # Core settings
