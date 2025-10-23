@@ -1,18 +1,21 @@
+
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
-import { Card, Input, Button, Typography, Avatar, Empty, Spin, Alert, Select, Tag } from 'antd';
+import React, { useState, useEffect, useRef, Suspense } from 'react';
+import { Card, Input, Button, Typography, Avatar, Empty, Spin, Alert, Select, Tag, Dropdown, Modal } from 'antd';
 import {
   SendOutlined,
   UserOutlined,
   RobotOutlined,
   FileTextOutlined,
+  SwapOutlined,
+  DownOutlined,
 } from '@ant-design/icons';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { AuthService } from '@/lib/auth';
 import { api } from '@/lib/api';
 import Layout from '@/components/ui/Layout';
-import type { ChatMessage, User, Document } from '@/types';
+import type { ChatMessage, User, Document, ReferenceDetail } from '@/types';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
@@ -20,9 +23,11 @@ const { TextArea } = Input;
 interface Message extends ChatMessage {
   id: number;
   timestamp: string;
+  references?: ReferenceDetail[];
 }
 
-export default function ChatPage() {
+// Create a separate component that uses useSearchParams
+function ChatContent() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState('');
   const [loading, setLoading] = useState(false);
@@ -31,8 +36,12 @@ export default function ChatPage() {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [selectedDocuments, setSelectedDocuments] = useState<Document[]>([]);
   const [documentsLoading, setDocumentsLoading] = useState(false);
+  const [reportModalOpen, setReportModalOpen] = useState(false);
+  const [reportText, setReportText] = useState('');
+  const [visibleSources, setVisibleSources] = useState<Set<number>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   useEffect(() => {
     // Check authentication
@@ -83,11 +92,16 @@ export default function ChatPage() {
       const documentsData = await api.getDocuments();
       setDocuments(documentsData);
 
-      // Auto-select all processed documents if available
-      const processedDocuments = documentsData.filter(doc => doc.status === 'processed');
-      if (processedDocuments.length > 0) {
-        setSelectedDocuments(processedDocuments);
+      // Check if a specific document ID is provided in the query params
+      const documentIdParam = searchParams.get('documentId');
+      if (documentIdParam) {
+        const documentId = parseInt(documentIdParam, 10);
+        const specificDocument = documentsData.find(doc => doc.id === documentId && doc.status === 'processed');
+        if (specificDocument) {
+          setSelectedDocuments([specificDocument]);
+        }
       }
+      // No auto-selection by default
     } catch (error) {
       console.error('Failed to load documents:', error);
     } finally {
@@ -96,11 +110,24 @@ export default function ChatPage() {
   };
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   };
 
   const handleSendMessage = async () => {
     if (!inputMessage.trim() || loading || selectedDocuments.length === 0) return;
+
+    // Check if all selected documents are processed
+    const unprocessedDocuments = selectedDocuments.filter(doc => doc.status !== 'processed');
+    if (unprocessedDocuments.length > 0) {
+      const errorMessage: Message = {
+        id: Date.now() + 1,
+        message: `Some documents are still processing: ${unprocessedDocuments.map(doc => doc.original_filename).join(', ')}. Please wait for processing to complete.`,
+        isUser: false,
+        timestamp: new Date().toISOString(),
+      };
+      setMessages(prev => [...prev, errorMessage]);
+      return;
+    }
 
     const userMessage: Message = {
       id: Date.now(),
@@ -124,6 +151,9 @@ export default function ChatPage() {
         message: response.response,
         isUser: false,
         timestamp: new Date().toISOString(),
+        context_docs: response.context_docs,
+        model_used: response.model_used,
+        references: response.references,
       };
 
       setMessages(prev => [...prev, assistantMessage]);
@@ -198,7 +228,9 @@ export default function ChatPage() {
                 <div className="font-medium">Select Documents to Chat With</div>
                 <div className="text-sm text-gray-500">
                   {selectedDocuments.length > 0
-                    ? `Chatting with: ${selectedDocuments.map(doc => doc.original_filename).join(', ')}`
+                    ? selectedDocuments.length === 1
+                      ? `Chatting with: ${selectedDocuments[0].original_filename}`
+                      : `Chatting with ${selectedDocuments.length} documents`
                     : 'Please select processed documents to start chatting'
                   }
                 </div>
@@ -217,6 +249,43 @@ export default function ChatPage() {
                   </div>
                 </div>
               )}
+              
+              {/* Document Switching */}
+              {documents.filter(doc => doc.status === 'processed').length > 1 && (
+                <Dropdown
+                  menu={{
+                    items: documents
+                      .filter(doc => doc.status === 'processed')
+                      .map(doc => ({
+                        key: doc.id,
+                        label: (
+                          <div
+                            className="flex items-center justify-between w-full"
+                            onClick={() => {
+                              if (selectedDocuments.some(selected => selected.id === doc.id)) {
+                                // Remove document if already selected
+                                setSelectedDocuments(prev => prev.filter(d => d.id !== doc.id));
+                              } else {
+                                // Add document if not selected
+                                setSelectedDocuments(prev => [...prev, doc]);
+                              }
+                            }}
+                          >
+                            <span className="truncate">{doc.original_filename}</span>
+                            {selectedDocuments.some(selected => selected.id === doc.id) && (
+                              <span className="text-green-500 ml-2">✓</span>
+                            )}
+                          </div>
+                        ),
+                      })),
+                  }}
+                  placement="bottomRight"
+                >
+                  <Button icon={<SwapOutlined />} size="small">
+                    Quick Switch
+                  </Button>
+                </Dropdown>
+              )}
               <Select
                 placeholder="Select documents"
                 mode="multiple"
@@ -229,7 +298,8 @@ export default function ChatPage() {
                 }}
                 className="w-96"
                 disabled={documentsLoading}
-                maxTagCount={3}
+                maxTagCount={2}
+                maxTagPlaceholder={(omittedValues) => `+${omittedValues.length} more...`}
               >
                 {documents
                   .filter(doc => doc.status === 'processed')
@@ -250,12 +320,40 @@ export default function ChatPage() {
               </Select>
             </div>
           </div>
+          
+          {/* Selected Documents Badges */}
+          {selectedDocuments.length > 0 && (
+            <div className="mt-4 pt-4 border-t">
+              <div className="flex flex-wrap gap-2">
+                {selectedDocuments.map((doc, index) => (
+                  <Tag
+                    key={doc.id}
+                    color={doc.status === 'processed' ? 'blue' : 'orange'}
+                    closable
+                    onClose={() => {
+                      const newSelected = selectedDocuments.filter(d => d.id !== doc.id);
+                      setSelectedDocuments(newSelected);
+                    }}
+                    className="flex items-center gap-1"
+                  >
+                    <FileTextOutlined className="text-xs" />
+                    <span className="max-w-[200px] truncate">{doc.original_filename}</span>
+                    {doc.status === 'processed' ? (
+                      <span className="text-green-600">✓</span>
+                    ) : (
+                      <span className="text-orange-600">⏳</span>
+                    )}
+                  </Tag>
+                ))}
+              </div>
+            </div>
+          )}
         </Card>
 
         {/* Chat Interface */}
-        <Card className="h-[600px] flex flex-col shadow-lg">
+        <Card className="h-[calc(100vh-200px)] min-h-[400px] flex flex-col shadow-lg">
           {/* Messages Area */}
-          <div className="flex-1 overflow-y-auto mb-4 space-y-4">
+          <div className="flex-1 overflow-y-auto mb-4 space-y-4" style={{ scrollBehavior: 'smooth', maxHeight: 'calc(100vh - 300px)' }}>
             {initialLoading ? (
               <div className="flex items-center justify-center h-full">
                 <div className="text-center">
@@ -306,9 +404,70 @@ export default function ChatPage() {
                         <div className={`break-words ${message.isUser ? 'text-white' : 'text-gray-800'}`}>
                           {message.message}
                         </div>
+                        
+                        {/* Collapsible source information */}
+                        {!message.isUser && ((message.references && message.references.length > 0) || (selectedDocuments.length > 1 && message.context_docs && message.context_docs.length > 0)) && (
+                          <div className="mt-2 pt-2 border-t border-gray-200">
+                            <Button size="small" type="link" onClick={() => {
+                              setVisibleSources(prev => {
+                                const newSet = new Set(prev);
+                                if (newSet.has(message.id)) {
+                                  newSet.delete(message.id);
+                                } else {
+                                  newSet.add(message.id);
+                                }
+                                return newSet;
+                              });
+                            }}>
+                              <DownOutlined className={`transition-transform ${visibleSources.has(message.id) ? 'rotate-180' : ''}`} />
+                              Source Details
+                            </Button>
+                            {visibleSources.has(message.id) && (
+                              <div className="mt-2 text-xs text-gray-500 transition-all duration-300">
+                                {selectedDocuments.length > 1 && message.context_docs && message.context_docs.length > 0 && (
+                                  <div>
+                                    Sources: {selectedDocuments
+                                      .filter(doc => message.context_docs?.includes(doc.id))
+                                      .map(doc => doc.original_filename)
+                                      .join(', ')}
+                                  </div>
+                                )}
+                                {message.references && message.references.length > 0 && (
+                                  <div className="mt-1">
+                                    <div className="font-medium mb-1">Detailed Source Details:</div>
+                                    {message.references.map((ref, index) => (
+                                      <div key={index} className="ml-2 mb-1">
+                                        <div className="flex items-center">
+                                          <span className="font-medium">{ref.filename}</span>
+                                          {ref.page_numbers && ref.page_numbers !== "N/A" && (
+                                            <span className="ml-2 text-blue-600">(Page {ref.page_numbers})</span>
+                                          )}
+                                        </div>
+                                        {ref.section_title && (
+                                          <div className="text-gray-600 italic">Section: {ref.section_title}</div>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        
                         <div className={`text-xs mt-2 ${message.isUser ? 'text-blue-100' : 'text-gray-500'}`}>
                           {new Date(message.timestamp).toLocaleTimeString()}
+                          {!message.isUser && message.model_used && (
+                            <span className="ml-2">• {message.model_used}</span>
+                          )}
                         </div>
+                        {!message.isUser && (
+                          <div className="mt-1">
+                            <Button size="small" type="link" onClick={() => setReportModalOpen(true)}>
+                              Report Error
+                            </Button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -364,17 +523,59 @@ export default function ChatPage() {
                 {loading ? 'Sending...' : 'Send'}
               </Button>
             </div>
-
-            {/* Action Buttons */}
-            <div className="flex justify-between items-center mt-3">
-              <div className="text-sm text-gray-500">
-                💡 Tip: Ask specific questions about your selected documents
-              </div>
-            </div>
           </div>
         </Card>
-
       </div>
+      <Modal
+        title="Report Error"
+        open={reportModalOpen}
+        onOk={() => {
+          // Handle report - for now, just log
+          console.log('Report submitted:', reportText);
+          setReportModalOpen(false);
+          setReportText('');
+        }}
+        onCancel={() => {
+          setReportModalOpen(false);
+          setReportText('');
+        }}
+      >
+        <div className="mb-4">
+          <Text>Describe the error in the AI response or provide the correct information:</Text>
+        </div>
+        <TextArea
+          placeholder="Enter your correction or description of the error..."
+          value={reportText}
+          onChange={(e) => setReportText(e.target.value)}
+          rows={4}
+        />
+      </Modal>
     </Layout>
+  );
+}
+
+// Main chat page component with Suspense boundary
+export default function ChatPage() {
+  return (
+    <Suspense fallback={
+      <Layout>
+        <div className="max-w-6xl mx-auto space-y-6">
+          <div className="text-center">
+            <Title level={2}>💬 Document Chat</Title>
+            <Text type="secondary">
+              Ask questions about your documents and get AI-powered answers
+            </Text>
+          </div>
+          <Card className="h-[600px] flex items-center justify-center">
+            <div className="text-center">
+              <Spin size="large" />
+              <div className="mt-4 text-gray-500">Loading chat interface...</div>
+            </div>
+          </Card>
+        </div>
+      </Layout>
+    }>
+      <ChatContent />
+    </Suspense>
   );
 }

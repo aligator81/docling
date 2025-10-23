@@ -47,6 +47,21 @@ export interface ChatMessage {
   isUser: boolean;
 }
 
+export interface ReferenceDetail {
+  document_id: number;
+  filename: string;
+  page_numbers?: string;
+  section_title?: string;
+  similarity: number;
+}
+
+export interface ChatResponse {
+  response: string;
+  context_docs: number[];
+  model_used: string;
+  references?: ReferenceDetail[];
+}
+
 // Form types
 export interface LoginForm {
   username: string;

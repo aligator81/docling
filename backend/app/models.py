@@ -223,3 +223,17 @@ class DocumentActivity(Base):
         Index('idx_activity_type', 'activity_type'),
         Index('idx_activity_created_at', 'created_at'),
     )
+
+class CompanyBranding(Base):
+    __tablename__ = "company_branding"
+
+    id = Column(Integer, primary_key=True, index=True)
+    company_name = Column(String(255), nullable=False)
+    logo_url = Column(Text)
+
+class SystemPrompt(Base):
+    __tablename__ = "system_prompt"
+
+    id = Column(Integer, primary_key=True, index=True)
+    prompt_text = Column(Text, nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())

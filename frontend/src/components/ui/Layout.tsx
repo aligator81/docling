@@ -26,6 +26,7 @@ import {
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { AuthService } from '@/lib/auth';
+import { api } from '@/lib/api';
 import type { User } from '@/types';
 
 const { Header, Sider, Content } = AntLayout;
@@ -40,6 +41,8 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const [mobileMenuVisible, setMobileMenuVisible] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [companyName, setCompanyName] = useState<string>('');
+  const [companyLogo, setCompanyLogo] = useState<string>('');
   const pathname = usePathname();
 
   useEffect(() => {
@@ -55,6 +58,18 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
     // Listen for storage changes (in case user data is updated elsewhere)
     window.addEventListener('storage', handleStorageChange);
+
+    // Load branding
+    const loadBranding = async () => {
+      try {
+        const branding = await api.getCompanyBranding();
+        setCompanyName(branding.company_name);
+        setCompanyLogo(branding.logo_url);
+      } catch (error) {
+        console.error('Failed to load branding:', error);
+      }
+    };
+    loadBranding();
 
     return () => {
       window.removeEventListener('storage', handleStorageChange);
@@ -135,9 +150,16 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     <div className="flex flex-col h-full">
       {/* Logo/Brand */}
       <div className="flex items-center justify-center h-16 px-4 border-b border-gray-200">
-        <Text strong className="text-lg">
-          📚 Doc Q&A
-        </Text>
+        <div className="flex items-center">
+          {companyLogo ? (
+            <img src={companyLogo} alt="Company Logo" className="h-6 mr-2" />
+          ) : (
+            <span className="text-lg mr-2">📚</span>
+          )}
+          <Text strong className="text-lg">
+            {companyName || 'Doc Q&A'}
+          </Text>
+        </div>
       </div>
 
       {/* Navigation Menu */}
@@ -165,7 +187,16 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
       {/* Mobile Sidebar */}
       <Drawer
-        title="📚 Doc Q&A"
+        title={
+          <div className="flex items-center">
+            {companyLogo ? (
+              <img src={companyLogo} alt="Company Logo" className="h-6 mr-2" />
+            ) : (
+              <span className="text-lg mr-2">📚</span>
+            )}
+            <span>{companyName || 'Doc Q&A'}</span>
+          </div>
+        }
         placement="left"
         onClose={() => setMobileMenuVisible(false)}
         open={mobileMenuVisible}

@@ -6,6 +6,7 @@ import { UserOutlined, LockOutlined, LoginOutlined } from '@ant-design/icons';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { AuthService } from '@/lib/auth';
+import { api } from '@/lib/api';
 import type { LoginForm } from '@/types';
 
 const { Title, Text } = Typography;
@@ -14,7 +15,22 @@ export default function LoginPage() {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [companyName, setCompanyName] = useState<string>('');
+  const [companyLogo, setCompanyLogo] = useState<string>('');
   const router = useRouter();
+
+  useEffect(() => {
+    const loadBranding = async () => {
+      try {
+        const branding = await api.getCompanyBranding();
+        setCompanyName(branding.company_name);
+        setCompanyLogo(branding.logo_url);
+      } catch (error) {
+        console.error('Failed to load branding:', error);
+      }
+    };
+    loadBranding();
+  }, []);
 
   // Check if already authenticated
   useEffect(() => {
@@ -41,9 +57,16 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
       <Card className="w-full max-w-md shadow-lg">
         <div className="text-center mb-8">
-          <Title level={2} className="text-gray-800 mb-2">
-            📚 Document Q&A Assistant
-          </Title>
+          <div className="flex items-center justify-center mb-2">
+            {companyLogo ? (
+              <img src={companyLogo} alt="Company Logo" className="h-8 mr-2" />
+            ) : (
+              <span className="text-2xl mr-2">📚</span>
+            )}
+            <Title level={2} className="text-gray-800 mb-0">
+              {companyName || 'Document Q&A Assistant'}
+            </Title>
+          </div>
           <Text type="secondary" className="text-lg">
             Sign in to your account
           </Text>
@@ -118,14 +141,6 @@ export default function LoginPage() {
           </Text>
         </div>
 
-        {/* Demo credentials for testing */}
-        <div className="mt-6 p-4 bg-gray-50 rounded-lg">
-          <Text type="secondary" className="text-sm">
-            <strong>Demo Credentials:</strong><br />
-            Admin: admin / admin123<br />
-            User: testuser / test123
-          </Text>
-        </div>
       </Card>
     </div>
   );

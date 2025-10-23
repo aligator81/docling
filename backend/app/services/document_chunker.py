@@ -317,19 +317,37 @@ class DocumentChunker:
 
                     # Try different ways to access page numbers from Docling
                     if hasattr(meta, 'page_numbers') and meta.page_numbers:
-                        page_numbers = str(meta.page_numbers)
+                        if isinstance(meta.page_numbers, list):
+                            page_numbers = ",".join(str(p) for p in meta.page_numbers)
+                        else:
+                            page_numbers = str(meta.page_numbers)
                     elif hasattr(meta, 'pages') and meta.pages:
-                        page_numbers = str(meta.pages)
+                        if isinstance(meta.pages, list):
+                            page_numbers = ",".join(str(p) for p in meta.pages)
+                        else:
+                            page_numbers = str(meta.pages)
                     elif hasattr(meta, 'page') and meta.page:
-                        page_numbers = str(meta.page)
+                        if isinstance(meta.page, list):
+                            page_numbers = ",".join(str(p) for p in meta.page)
+                        else:
+                            page_numbers = str(meta.page)
 
                     # Try different ways to access section titles
                     if hasattr(meta, 'section_title') and meta.section_title:
-                        section_title = str(meta.section_title)
+                        if isinstance(meta.section_title, list):
+                            section_title = " ".join(str(t) for t in meta.section_title)
+                        else:
+                            section_title = str(meta.section_title)
                     elif hasattr(meta, 'title') and meta.title:
-                        section_title = str(meta.title)
+                        if isinstance(meta.title, list):
+                            section_title = " ".join(str(t) for t in meta.title)
+                        else:
+                            section_title = str(meta.title)
                     elif hasattr(meta, 'heading') and meta.heading:
-                        section_title = str(meta.heading)
+                        if isinstance(meta.heading, list):
+                            section_title = " ".join(str(t) for t in meta.heading)
+                        else:
+                            section_title = str(meta.heading)
 
                     # Get chunk type
                     if hasattr(meta, 'chunk_type'):

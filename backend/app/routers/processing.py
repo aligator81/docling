@@ -60,7 +60,7 @@ async def extract_document(
 
     try:
         # Process document extraction
-        result = await document_processor.extract_document(document.file_path)
+        result = await document_processor.extract_document(document.file_path, original_filename=document.original_filename)
 
         if result.success:
             # Update document with extracted content
@@ -335,7 +335,7 @@ async def process_document_complete(
 
     try:
         # Step 1: Extract document content
-        extraction_result = await document_processor.extract_document(document.file_path)
+        extraction_result = await document_processor.extract_document(document.file_path, original_filename=document.original_filename)
 
         if not extraction_result.success:
             document.status = "failed"

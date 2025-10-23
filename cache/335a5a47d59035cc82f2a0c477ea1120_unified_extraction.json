@@ -1,0 +1,5 @@
+{
+  "content": "\n\nChat Q&A Interface – conversational retrieval over uploaded knowledge base.\nMulti-format ingestion – PDF, Word, Excel, HTML, images (JPG/PNG), scanned documents.\nOCR (Arabic + others) – via Google Document AI (recommended) or Tesseract/EasyOCR fallback.\nTable & chart extraction – parse structured data (Camelot, pdfplumber, Donut/Pix2Struct).\nImage understanding – embed images (CLIP/BLIP) alongside text for multimodal retrieval.\nLLM Configuration Page – select provider (OpenAI, Anthropic, local), adjust temperature, prompts, etc.\nFile management – upload, list, delete, and re-process documents.\nScalable architecture – supports long documents (hundreds of pages, large MBs) with hierarchical chunking and hybrid retrieval.\nFrontend (React + MUI)\n\n ｝── Chat Page (Q&A with AI + citations)\n\n ｝── Upload Page (multi-file upload, status)\n\n ｝── Config Page (LLM + agent settings)\n\n",
+  "method": "mistral_ocr",
+  "processing_time": 0.9016509056091309
+}

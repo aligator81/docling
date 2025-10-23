@@ -63,10 +63,18 @@ class ChatMessage(BaseModel):
     document_ids: Optional[List[int]] = None
     context_docs: Optional[List[int]] = None
 
+class ReferenceDetail(BaseModel):
+    document_id: int
+    filename: str
+    page_numbers: Optional[str] = None
+    section_title: Optional[str] = None
+    similarity: float
+
 class ChatResponse(BaseModel):
     response: str
     context_docs: List[int]
     model_used: str
+    references: Optional[List[ReferenceDetail]] = None
 
 # Admin schemas
 class UserManagement(BaseModel):
@@ -134,3 +142,17 @@ class ChunkingRequest(BaseModel):
 class EmbeddingRequest(BaseModel):
     provider: Optional[str] = "openai"
     resume: bool = False
+
+# Company Branding schemas
+class CompanyBrandingBase(BaseModel):
+    company_name: str
+    logo_url: Optional[str] = None
+
+class CompanyBrandingCreate(CompanyBrandingBase):
+    pass
+
+class CompanyBranding(CompanyBrandingBase):
+    id: int
+
+    class Config:
+        from_attributes = True

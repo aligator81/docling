@@ -272,6 +272,10 @@ class DocumentProcessor:
             cached_result = self.document_cache.get_cached_result(file_path, "docling_extraction")
             if cached_result:
                 print(f"📋 Using cached Docling result for {file_path}")
+                # Update filename to use original if available
+                if original_filename:
+                    output_name = os.path.splitext(original_filename)[0]
+                    cached_result['filename'] = f"{self.output_dir}/{output_name}_docling_extracted.md"
                 return ProcessingResult(
                     success=True,
                     content=cached_result.get('content', ''),
@@ -280,8 +284,11 @@ class DocumentProcessor:
                     metadata=cached_result
                 )
 
-            base_name = os.path.splitext(os.path.basename(file_path))[0]
-            filename = f"{self.output_dir}/{base_name}_docling_extracted.md"
+            if original_filename:
+                output_name = os.path.splitext(original_filename)[0]
+            else:
+                output_name = os.path.splitext(os.path.basename(file_path))[0]
+            filename = f"{self.output_dir}/{output_name}_docling_extracted.md"
 
             # Check file size
             file_size_bytes = os.path.getsize(file_path)
@@ -312,7 +319,8 @@ class DocumentProcessor:
                             "filename": filename,
                             "file_extension": file_extension,
                             "enable_ocr": enable_ocr,
-                            "processing_time": 0.1
+                            "processing_time": 0.1,
+                            "original_filename": original_filename
                         })
 
                         return ProcessingResult(
@@ -323,7 +331,8 @@ class DocumentProcessor:
                             metadata={
                                 "filename": filename,
                                 "file_extension": file_extension,
-                                "enable_ocr": enable_ocr
+                                "enable_ocr": enable_ocr,
+                                "original_filename": original_filename
                             }
                         )
                 except Exception as md_error:
@@ -403,7 +412,8 @@ class DocumentProcessor:
                         "filename": filename,
                         "file_extension": file_extension,
                         "enable_ocr": enable_ocr,
-                        "processing_time": processing_time
+                        "processing_time": processing_time,
+                        "original_filename": original_filename
                     })
 
                     return ProcessingResult(
@@ -414,7 +424,8 @@ class DocumentProcessor:
                         metadata={
                             "filename": filename,
                             "file_extension": file_extension,
-                            "enable_ocr": enable_ocr
+                            "enable_ocr": enable_ocr,
+                            "original_filename": original_filename
                         }
                     )
                 else:
@@ -447,8 +458,11 @@ class DocumentProcessor:
     async def extract_with_mistral_ocr(self, file_path: str) -> ProcessingResult:
         """Extract document using Mistral OCR (cloud processing)"""
         try:
-            base_name = os.path.splitext(os.path.basename(file_path))[0]
-            filename = f"{self.output_dir}/{base_name}_mistral_extracted.md"
+            if original_filename:
+                output_name = os.path.splitext(original_filename)[0]
+            else:
+                output_name = os.path.splitext(os.path.basename(file_path))[0]
+            filename = f"{self.output_dir}/{output_name}_mistral_extracted.md"
 
             print(f"☁️ Extracting with Mistral OCR: {file_path}")
 
@@ -551,7 +565,8 @@ class DocumentProcessor:
                     processing_time=processing_time,
                     metadata={
                         "filename": filename,
-                        "file_extension": file_extension
+                        "file_extension": file_extension,
+                        "original_filename": original_filename
                     }
                 )
             else:
@@ -572,7 +587,7 @@ class DocumentProcessor:
                 processing_time=processing_time
             )
 
-    async def extract_document(self, file_path: str, prefer_cloud: bool = False, use_cache: bool = True) -> ProcessingResult:
+    async def extract_document(self, file_path: str, prefer_cloud: bool = False, use_cache: bool = True, original_filename: Optional[str] = None) -> ProcessingResult:
         """
         Extract document with intelligent fallback logic
 
@@ -600,6 +615,14 @@ class DocumentProcessor:
             cached_result = self.document_cache.get_cached_result(file_path, "unified_extraction")
             if cached_result:
                 print(f"📋 Using cached result for {file_path}")
+                # Update filename to use original if available
+                if original_filename:
+                    output_name = os.path.splitext(original_filename)[0]
+                    method = cached_result.get('method', 'unknown')
+                    if method == 'docling':
+                        cached_result['filename'] = f"{self.output_dir}/{output_name}_docling_extracted.md"
+                    elif method == 'mistral_ocr':
+                        cached_result['filename'] = f"{self.output_dir}/{output_name}_mistral_extracted.md"
                 return ProcessingResult(
                     success=True,
                     content=cached_result.get('content', ''),
@@ -619,9 +642,10 @@ class DocumentProcessor:
                 self.document_cache.cache_result(file_path, "unified_extraction", {
                     "content": result.content,
                     "method": result.method,
-                    "processing_time": result.processing_time
+                    "processing_time": result.processing_time,
+                    "original_filename": original_filename
                 })
-            return result
+                return result
 
         # Try preferred method first for non-markdown files
         if prefer_cloud:
@@ -631,7 +655,8 @@ class DocumentProcessor:
                 self.document_cache.cache_result(file_path, "unified_extraction", {
                     "content": result.content,
                     "method": result.method,
-                    "processing_time": result.processing_time
+                    "processing_time": result.processing_time,
+                    "original_filename": original_filename
                 })
                 return result
 
@@ -644,7 +669,8 @@ class DocumentProcessor:
                 self.document_cache.cache_result(file_path, "unified_extraction", {
                     "content": result.content,
                     "method": result.method,
-                    "processing_time": result.processing_time
+                    "processing_time": result.processing_time,
+                    "original_filename": original_filename
                 })
                 return result
 
@@ -719,7 +745,7 @@ class DocumentProcessor:
                 if file_path and os.path.exists(file_path):
                     print(f"\n🔄 Processing [{success_count + 1}/{len(documents)}]: {doc.filename} (ID: {doc.id})")
 
-                    result = await self.extract_document(doc.file_path)
+                    result = await self.extract_document(doc.file_path, original_filename=doc.original_filename)
 
                     if result.success:
                         # Update database with extracted content

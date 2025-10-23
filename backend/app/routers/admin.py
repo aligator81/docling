@@ -1,12 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from typing import List
 from datetime import datetime, timedelta
 import os
 
 from ..database import get_db
-from ..models import User, Document, DocumentChunk, Embedding, ChatHistory, APISession
-from ..schemas import User as UserSchema, UserCreate, SystemStats, APIConfigCreate, APIConfig, PasswordReset
+from ..models import User, Document, DocumentChunk, Embedding, ChatHistory, APISession, CompanyBranding as CompanyBrandingModel, SystemPrompt
+from ..schemas import User as UserSchema, UserCreate, SystemStats, APIConfigCreate, APIConfig, PasswordReset, CompanyBranding, CompanyBrandingCreate
 from ..auth import get_admin_user, get_super_admin_user, require_permissions, get_password_hash
 
 router = APIRouter()
@@ -444,3 +445,136 @@ async def configure_api_keys(
         "provider": config.provider,
         "is_active": config.is_active
     }
+
+@router.post("/branding")
+async def save_company_branding(
+    branding: CompanyBrandingCreate,
+    current_user: User = Depends(get_super_admin_user),
+    db: Session = Depends(get_db)
+):
+    """Save company branding (super admin only)"""
+    # Check if branding already exists
+    existing = db.query(CompanyBrandingModel).first()
+    if existing:
+        existing.company_name = branding.company_name
+        existing.logo_url = branding.logo_url
+        db.commit()
+        db.refresh(existing)
+        return {
+            "id": existing.id,
+            "company_name": existing.company_name,
+            "logo_url": existing.logo_url
+        }
+    else:
+        new_branding = CompanyBrandingModel(
+            company_name=branding.company_name,
+            logo_url=branding.logo_url
+        )
+        db.add(new_branding)
+        db.commit()
+        db.refresh(new_branding)
+        return {
+            "id": new_branding.id,
+            "company_name": new_branding.company_name,
+            "logo_url": new_branding.logo_url
+        }
+
+@router.get("/branding")
+async def get_company_branding(
+    current_user: User = Depends(get_super_admin_user),
+    db: Session = Depends(get_db)
+):
+    """Get company branding (super admin only)"""
+    branding = db.query(CompanyBrandingModel).first()
+    if not branding:
+        return {"id": 0, "company_name": "", "logo_url": None}
+    return {
+        "id": branding.id,
+        "company_name": branding.company_name,
+        "logo_url": branding.logo_url
+    }
+
+@router.get("/branding/public")
+async def get_company_branding_public(
+    db: Session = Depends(get_db)
+):
+    """Get company branding (public)"""
+    branding = db.query(CompanyBrandingModel).first()
+    if not branding:
+        # Return default values if not set
+        return {"id": 0, "company_name": "📚 Doc Q&A", "logo_url": None}
+    return {
+        "id": branding.id,
+        "company_name": branding.company_name,
+        "logo_url": branding.logo_url
+    }
+
+@router.get("/system-prompt")
+async def get_system_prompt(
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db)
+):
+    """Get system prompt (admin only)"""
+    prompt = db.query(SystemPrompt).first()
+    if not prompt:
+        # Insert default prompt
+        default_prompt = """You are a helpful assistant that answers questions based on the provided document context from selected documents.
+
+Use ONLY the information from the context to answer questions. Consider information from ALL provided document sources when forming your response.
+
+Context:
+{context}
+
+{references_text}
+
+When answering, please:
+1. Be direct and helpful
+2. Reference specific documents when relevant (mention which document the information comes from)
+3. Include page numbers and section titles when available to help users locate the information
+4. Synthesize information from multiple documents when possible
+5. Compare and contrast information from different documents when relevant
+6. If information conflicts between documents, acknowledge the differences
+7. If no relevant information is found in any document, clearly state that
+8. When synthesizing from multiple sources, indicate which documents contributed to your answer
+
+For multi-document questions:
+- If the question spans multiple documents, synthesize information from all relevant sources
+- If documents provide complementary information, combine them logically
+- If documents provide conflicting information, present both perspectives
+- Always attribute information to specific documents when possible, including page numbers and sections when available
+
+When referencing sources:
+- Mention the document name, page number(s), and section title when available
+- Example: "According to [Document Name] (Page X, Section Y)..."
+- Example: "As mentioned in [Document Name] on page X..."
+- Example: "Based on the section '[Section Title]' in [Document Name]..."
+- This helps users easily locate the referenced information in their documents"""
+        prompt = SystemPrompt(prompt_text=default_prompt)
+        db.add(prompt)
+        db.commit()
+        db.refresh(prompt)
+    return {"prompt_text": prompt.prompt_text}
+
+@router.post("/system-prompt")
+async def update_system_prompt(
+    prompt_data: dict,
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db)
+):
+    """Update system prompt (admin only)"""
+    prompt_text = prompt_data.get("prompt_text")
+    if not prompt_text:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="prompt_text is required"
+        )
+    prompt = db.query(SystemPrompt).first()
+    if not prompt:
+        prompt = SystemPrompt(prompt_text=prompt_text)
+        db.add(prompt)
+    else:
+        prompt.prompt_text = prompt_text
+        prompt.updated_at = func.now()
+    db.commit()
+    db.refresh(prompt)
+    return {"message": "System prompt updated", "prompt_text": prompt.prompt_text}

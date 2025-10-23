@@ -11,7 +11,7 @@ def test_chat():
     
     # Test data
     test_data = {
-        "message": "What is this document about?",
+        "message": "hi",
         "document_ids": [43]
     }
     

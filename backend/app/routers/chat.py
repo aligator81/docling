@@ -4,9 +4,11 @@ from typing import List, Optional
 import os
 import numpy as np
 from datetime import datetime
+import hashlib
+import asyncio
 
 from ..database import get_db
-from ..models import User, Document, DocumentChunk, Embedding, ChatHistory
+from ..models import User, Document, DocumentChunk, Embedding, ChatHistory, SystemPrompt
 from ..schemas import ChatMessage, ChatResponse
 from ..auth import get_current_active_user
 from ..config import settings
@@ -15,6 +17,9 @@ from ..config import settings
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+
+# Simple in-memory cache for embeddings (replace with Redis in production)
+embedding_cache = {}
 
 router = APIRouter()
 
@@ -131,27 +136,47 @@ async def chat_with_documents(
             # Admin users can search all documents
             context, references = await get_context_from_db(message.message, db, None, None)
 
-    if not context:
-        # No relevant context found
-        response_text = "I couldn't find any relevant information in your documents to answer this question. Please try asking a different question or ensure your documents have been properly processed."
-        model_used = model_name
+    # Always generate response using LLM, even if no context
 
-        # Save chat history
-        chat_record = ChatHistory(
-            user_id=current_user.id,
-            message=message.message,
-            response=response_text,
-            context_docs="[]",
-            model_used=model_used
-        )
-        db.add(chat_record)
-        db.commit()
+    # Fetch system prompt
+    prompt_record = db.query(SystemPrompt).first()
+    if prompt_record:
+        system_prompt_template = prompt_record.prompt_text
+    else:
+        # Fallback default prompt
+        system_prompt_template = """You are a helpful assistant that answers questions based on the provided document context from selected documents.
 
-        return ChatResponse(
-            response=response_text,
-            context_docs=[],
-            model_used=model_used
-        )
+If context is provided, use ONLY the information from the context to answer questions. Consider information from ALL provided document sources when forming your response.
+
+Context:
+{context}
+
+{references_text}
+
+When answering, please:
+1. Be direct and helpful
+2. Reference specific documents when relevant (mention which document the information comes from)
+3. Include page numbers and section titles when available to help users locate the information
+4. Synthesize information from multiple documents when possible
+5. Compare and contrast information from different documents when relevant
+6. If information conflicts between documents, acknowledge the differences
+7. If no relevant information is found in any document, clearly state that you cannot find information on that topic in the documents, but offer general help if appropriate
+8. When synthesizing from multiple sources, indicate which documents contributed to your answer
+
+For multi-document questions:
+- If the question spans multiple documents, synthesize information from all relevant sources
+- If documents provide complementary information, combine them logically
+- If documents provide conflicting information, present both perspectives
+- Always attribute information to specific documents when possible, including page numbers and sections when available
+
+When referencing sources:
+- Mention the document name, page number(s), and section title when available
+- Example: "According to [Document Name] (Page X, Section Y)..."
+- Example: "As mentioned in [Document Name] on page X..."
+- Example: "Based on the section '[Section Title]' in [Document Name]..."
+- This helps users easily locate the referenced information in their documents
+
+If no context is provided or the context is empty, respond as a general helpful assistant and engage in conversation naturally."""
 
     # Generate response using LLM
     response_text = await generate_llm_response(
@@ -160,11 +185,34 @@ async def chat_with_documents(
         references,
         llm_provider,
         model_name,
-        message.document_ids
+        message.document_ids,
+        system_prompt_template
     )
 
     # Extract context document IDs for response
     context_doc_ids = [ref.get("id", 0) for ref in references] if references else []
+
+    # Prepare detailed references for response
+    detailed_references = []
+    if references:
+        for ref in references:
+            # Get document ID from the chunk ID
+            chunk = db.query(DocumentChunk).filter(DocumentChunk.id == ref["id"]).first()
+            if chunk:
+                # Convert page_numbers to string if it's a list
+                page_numbers = ref["page_numbers"]
+                if isinstance(page_numbers, list):
+                    page_numbers = ", ".join(map(str, page_numbers))
+                elif page_numbers is None:
+                    page_numbers = "N/A"
+                
+                detailed_references.append({
+                    "document_id": chunk.document_id,
+                    "filename": ref["filename"],
+                    "page_numbers": page_numbers,
+                    "section_title": ref["section_title"],
+                    "similarity": ref["similarity"]
+                })
 
     # Save chat history
     chat_record = ChatHistory(
@@ -180,7 +228,8 @@ async def chat_with_documents(
     return ChatResponse(
         response=response_text,
         context_docs=context_doc_ids,
-        model_used=model_name
+        model_used=model_name,
+        references=detailed_references
     )
 
 @router.get("/history")
@@ -228,6 +277,34 @@ def cosine_similarity(a: List[float], b: List[float]) -> float:
         print(f"Error calculating cosine similarity: {e}")
         return 0.0
 
+def extract_page_numbers_from_query(query: str) -> List[int]:
+    """Extract page numbers from query text"""
+    import re
+    if not query:
+        return []
+    
+    # Look for page number patterns
+    page_patterns = [
+        r'page\s+(\d+)',                   # "page 23"
+        r'Page\s+(\d+)',                   # "Page 23"
+        r'p\.\s*(\d+)',                    # "p. 23"
+        r'pp\.\s*(\d+)',                   # "pp. 23"
+        r'pg\.\s*(\d+)',                   # "pg. 23"
+        r'\(page\s+(\d+)\)',               # (page 23)
+        r'\[page\s+(\d+)\]',               # [page 23]
+    ]
+    
+    found_pages = []
+    for pattern in page_patterns:
+        matches = re.findall(pattern, query, re.IGNORECASE)
+        for match in matches:
+            if match.isdigit():
+                page_num = int(match)
+                if 1 <= page_num <= 10000:  # Reasonable page range
+                    found_pages.append(page_num)
+    
+    return sorted(set(found_pages))
+
 async def get_context_from_db(query: str, db: Session, document_ids: Optional[List[int]] = None, user_id: Optional[int] = None) -> tuple[str, list]:
     """Get relevant context from database using embeddings"""
     try:
@@ -236,11 +313,14 @@ async def get_context_from_db(query: str, db: Session, document_ids: Optional[Li
         if not query_embedding:
             return "", []
 
-        # Build base query
+        # Build base query - include section_title and page_numbers
         query_base = db.query(
             DocumentChunk.id,
             DocumentChunk.chunk_text,
-            Document.filename
+            DocumentChunk.section_title,
+            DocumentChunk.page_numbers,
+            Document.filename,
+            Document.original_filename
         ).join(
             Embedding, DocumentChunk.id == Embedding.chunk_id
         ).join(
@@ -257,15 +337,19 @@ async def get_context_from_db(query: str, db: Session, document_ids: Optional[Li
         if document_ids:
             query_base = query_base.filter(Document.id.in_(document_ids))
 
-        # Get all chunks with embeddings for similarity calculation
-        all_chunks = query_base.all()
+        # Limit the search scope for better performance - only get top 100 chunks initially
+        print(f"🔍 Searching for relevant context in limited scope...")
+        limited_chunks = query_base.limit(100).all()
 
-        if not all_chunks:
+        if not limited_chunks:
             return "", []
 
-        # Calculate similarity scores for all chunks
+        # Extract page numbers from query for boosting
+        query_pages = extract_page_numbers_from_query(query)
+
+        # Calculate similarity scores for limited chunks
         similarities = []
-        for chunk_id, chunk_text, filename in all_chunks:
+        for chunk_id, chunk_text, section_title, page_numbers, filename, original_filename in limited_chunks:
             # Get the embedding vector for this chunk
             embedding_result = db.query(Embedding).filter(Embedding.chunk_id == chunk_id).first()
             if embedding_result and embedding_result.embedding_vector:
@@ -282,14 +366,27 @@ async def get_context_from_db(query: str, db: Session, document_ids: Optional[Li
                         embedding_vector = [float(x) for x in embedding_vector]
                         # Calculate cosine similarity
                         similarity = cosine_similarity(query_embedding, embedding_vector)
-                        similarities.append((chunk_id, chunk_text, filename, similarity))
+                        
+                        # Boost similarity if query mentions specific pages that match chunk pages
+                        if query_pages and page_numbers:
+                            # Handle page_numbers as list or string
+                            chunk_pages = page_numbers if isinstance(page_numbers, list) else [page_numbers]
+                            if any(p in chunk_pages for p in query_pages):
+                                similarity += 0.1  # Boost for page match
+                        
+                        similarities.append((chunk_id, chunk_text, section_title, page_numbers, filename, original_filename, similarity))
                 except (json.JSONDecodeError, ValueError, TypeError) as e:
                     print(f"Error processing embedding vector for chunk {chunk_id}: {e}")
                     continue
 
+        # Filter by minimum similarity threshold (e.g., 0.5) to avoid low-relevance chunks
+        min_similarity = 0.5
+        filtered_similarities = [sim for sim in similarities if sim[6] >= min_similarity]
+
         # Sort by similarity score (highest first) and take top 5
-        similarities.sort(key=lambda x: x[3], reverse=True)
-        results = similarities[:5]
+        filtered_similarities.sort(key=lambda x: x[6], reverse=True)
+        results = filtered_similarities[:5]
+        print(f"✅ Found {len(results)} relevant chunks from {len(limited_chunks)} searched (filtered from {len(similarities)} total)")
 
         if not results:
             return "", []
@@ -298,18 +395,22 @@ async def get_context_from_db(query: str, db: Session, document_ids: Optional[Li
         context_parts = []
         references = []
 
-        for i, (chunk_id, chunk_text, filename, similarity) in enumerate(results, 1):
-            # Add to context
-            context_parts.append(f"Document: {filename}")
+        for i, (chunk_id, chunk_text, section_title, page_numbers, filename, original_filename, similarity) in enumerate(results, 1):
+            # Add to context with enhanced metadata
+            context_parts.append(f"Document: {original_filename}")
+            if section_title:
+                context_parts.append(f"Section: {section_title}")
+            if page_numbers:
+                context_parts.append(f"Page(s): {page_numbers}")
             context_parts.append(f"Content: {chunk_text}")
             context_parts.append("---")
 
-            # Add to references
+            # Add to references with enhanced metadata
             references.append({
                 "id": chunk_id,
-                "filename": filename,
-                "page_numbers": "N/A",
-                "title": "",
+                "filename": original_filename,
+                "page_numbers": page_numbers if page_numbers else "N/A",
+                "section_title": section_title if section_title else "",
                 "similarity": similarity
             })
 
@@ -321,33 +422,58 @@ async def get_context_from_db(query: str, db: Session, document_ids: Optional[Li
         return "", []
 
 async def get_embedding(text: str) -> Optional[List[float]]:
-    """Get embedding for text using configured provider"""
+    """Get embedding for text using configured provider - ASYNC VERSION with caching"""
     try:
+        # Check cache first
+        cache_key = hashlib.md5(text.encode()).hexdigest()
+        if cache_key in embedding_cache:
+            print(f"📋 Using cached embedding for query: {text[:50]}...")
+            return embedding_cache[cache_key]
+
         openai_key = os.getenv("OPENAI_API_KEY")
         mistral_key = os.getenv("MISTRAL_API_KEY")
 
         if openai_key:
-            from openai import OpenAI
-            client = OpenAI(api_key=openai_key)
-            response = client.embeddings.create(
-                model="text-embedding-3-large",
+            from openai import AsyncOpenAI
+            client = AsyncOpenAI(api_key=openai_key)
+            print(f"🤖 Getting async embedding from OpenAI for: {text[:50]}...")
+            response = await client.embeddings.create(
+                model="text-embedding-3-large",  # Use same model as document processing
                 input=text
             )
-            return response.data[0].embedding
+            embedding = response.data[0].embedding
+            
+            # Cache the result
+            embedding_cache[cache_key] = embedding
+            print(f"✅ Async embedding generated and cached ({len(embedding)} dimensions)")
+            return embedding
 
         elif mistral_key:
+            # Mistral doesn't have official async support yet, use sync with asyncio
             from mistralai import Mistral
             client = Mistral(api_key=mistral_key)
-            response = client.embeddings.create(
-                model="mistral-embed",
-                inputs=[text]
+            print(f"🤖 Getting embedding from Mistral for: {text[:50]}...")
+            
+            # Run sync Mistral call in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: client.embeddings.create(
+                    model="mistral-embed",
+                    inputs=[text]
+                )
             )
-            return response.data[0].embedding
+            embedding = response.data[0].embedding
+            
+            # Cache the result
+            embedding_cache[cache_key] = embedding
+            print(f"✅ Mistral embedding generated and cached ({len(embedding)} dimensions)")
+            return embedding
 
         return None
 
     except Exception as e:
-        print(f"Error getting embedding: {e}")
+        print(f"❌ Error getting embedding: {e}")
         return None
 
 async def generate_llm_response(
@@ -356,11 +482,12 @@ async def generate_llm_response(
     references: list,
     provider: str,
     model: str,
-    document_ids: Optional[List[int]] = None
+    document_ids: Optional[List[int]] = None,
+    system_prompt_template: str = None
 ) -> str:
     """Generate response using LLM"""
     try:
-        # Format references for the prompt
+        # Format references for the prompt with enhanced metadata
         references_text = ""
         if references:
             references_text = "\n\nSource References:\n"
@@ -368,8 +495,8 @@ async def generate_llm_response(
                 ref_line = f"• {ref['filename']}"
                 if ref['page_numbers'] != "N/A":
                     ref_line += f" (Page(s): {ref['page_numbers']})"
-                if ref['title']:
-                    ref_line += f" - {ref['title']}"
+                if ref['section_title']:
+                    ref_line += f" - Section: {ref['section_title']}"
                 references_text += ref_line + "\n"
 
         # Create system prompt
@@ -388,20 +515,7 @@ async def generate_llm_response(
             if document_ids_list and len(document_ids_list) > 1:
                 selected_docs_text = f"You are answering questions based on {len(document_ids_list)} selected documents. "
 
-        system_prompt = f"""You are a helpful assistant that answers questions based on the provided document context from selected documents.
-
-        {selected_docs_text}Use ONLY the information from the context to answer questions. Consider information from ALL provided document sources when forming your response.
-
-        Context:
-        {context}
-
-        {references_text}
-
-        When answering, please:
-        1. Be direct and helpful
-        2. Reference specific documents when relevant (mention which document the information comes from)
-        3. Synthesize information from multiple documents when possible
-        4. If no relevant information is found in any document, clearly state that"""
+        system_prompt = system_prompt_template.format(selected_docs_text=selected_docs_text, context=context, references_text=references_text)
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -409,9 +523,10 @@ async def generate_llm_response(
         ]
 
         if provider == "openai":
-            from openai import OpenAI
-            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-            response = client.chat.completions.create(
+            from openai import AsyncOpenAI
+            client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            print(f"🤖 Generating async LLM response with {model}...")
+            response = await client.chat.completions.create(
                 model=model,
                 messages=messages,
                 temperature=0.7,
@@ -420,13 +535,21 @@ async def generate_llm_response(
             return response.choices[0].message.content
 
         elif provider == "mistral":
+            # Mistral doesn't have official async support yet, use sync with asyncio
             from mistralai import Mistral
             client = Mistral(api_key=os.getenv("MISTRAL_API_KEY"))
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=1000
+            print(f"🤖 Generating LLM response with {model}...")
+            
+            # Run sync Mistral call in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.7,
+                    max_tokens=1000
+                )
             )
             return response.choices[0].message.content
 

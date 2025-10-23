@@ -46,8 +46,8 @@ def test_chat_with_auth():
     
     # Test data
     test_data = {
-        "message": "What is this document about?",
-        "document_ids": [43]
+        "message": "hi",
+        "document_ids": [60]
     }
     
     url = "http://localhost:8000/api/chat"

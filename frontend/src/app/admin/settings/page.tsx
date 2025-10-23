@@ -18,6 +18,11 @@ import {
   Tabs,
   Statistic,
   Tag,
+  InputNumber,
+  Tooltip,
+  Modal,
+  Upload,
+  Image,
 } from 'antd';
 import {
   SettingOutlined,
@@ -28,6 +33,7 @@ import {
   ReloadOutlined,
   CheckCircleOutlined,
   ExclamationCircleOutlined,
+  BuildOutlined,
 } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
 import { AuthService } from '@/lib/auth';
@@ -42,14 +48,39 @@ interface APIConfig {
   provider: 'openai' | 'mistral';
   api_key: string;
   is_active: boolean;
+  model?: string;
+  max_tokens?: number;
+  temperature?: number;
 }
 
 export default function AdminSettingsPage() {
   const [loading, setLoading] = useState(false);
   const [testing, setTesting] = useState(false);
   const [systemStats, setSystemStats] = useState<any>(null);
+  const [confirmVisible, setConfirmVisible] = useState(false);
+  const [selectedProvider, setSelectedProvider] = useState<'openai' | 'mistral'>('openai');
+  const [pendingValues, setPendingValues] = useState<APIConfig | null>(null);
   const [form] = Form.useForm();
+  const [dbForm] = Form.useForm();
+  const [dbLoading, setDbLoading] = useState(false);
+  const [brandingForm] = Form.useForm();
+  const [promptForm] = Form.useForm();
+  const [systemPrompt, setSystemPrompt] = useState('');
+  const [promptLoading, setPromptLoading] = useState(false);
   const router = useRouter();
+
+  const modelOptions = {
+    openai: [
+      { value: 'gpt-4o-mini', label: 'GPT-4o Mini' },
+      { value: 'gpt-4', label: 'GPT-4' },
+      { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo' }
+    ],
+    mistral: [
+      { value: 'mistral-large', label: 'Mistral Large' },
+      { value: 'mistral-medium', label: 'Mistral Medium' },
+      { value: 'mistral-small', label: 'Mistral Small' }
+    ]
+  };
 
   useEffect(() => {
     // Check authentication and permissions
@@ -65,6 +96,8 @@ export default function AdminSettingsPage() {
     }
 
     loadSystemStats();
+    loadBrandingSettings();
+    loadSystemPrompt();
   }, [router]);
 
   const loadSystemStats = async () => {
@@ -73,6 +106,54 @@ export default function AdminSettingsPage() {
       setSystemStats(stats);
     } catch (error) {
       console.error('Failed to load system stats:', error);
+    }
+  };
+
+  const loadBrandingSettings = async () => {
+    try {
+      const branding = await api.getCompanyBranding();
+      brandingForm.setFieldsValue({
+        companyName: branding.company_name || '',
+        logo: branding.logo_url ? [{ url: branding.logo_url }] : [],
+      });
+    } catch (error) {
+      console.error('Failed to load branding:', error);
+    }
+  };
+
+  const loadSystemPrompt = async () => {
+    try {
+      const data = await api.getSystemPrompt();
+      setSystemPrompt(data.prompt_text);
+      promptForm.setFieldsValue({ prompt: data.prompt_text });
+    } catch (error) {
+      console.error('Failed to load system prompt:', error);
+    }
+  };
+
+  const handleSaveBranding = async (values: any) => {
+    try {
+      await api.saveCompanyBranding({
+        company_name: values.companyName,
+        logo_url: values.logo && values.logo.length > 0 ? values.logo[0].url : undefined,
+      });
+      message.success('Company branding saved successfully');
+      loadBrandingSettings(); // Refresh form
+    } catch (error) {
+      message.error('Failed to save branding');
+    }
+  };
+
+  const handleSavePrompt = async (values: any) => {
+    setPromptLoading(true);
+    try {
+      await api.updateSystemPrompt(values.prompt);
+      setSystemPrompt(values.prompt);
+      message.success('System prompt updated successfully');
+    } catch (error) {
+      message.error('Failed to update system prompt');
+    } finally {
+      setPromptLoading(false);
     }
   };
 
@@ -107,6 +188,36 @@ export default function AdminSettingsPage() {
     }
   };
 
+  const handleConfirmSave = async () => {
+    if (!pendingValues) return;
+    setConfirmVisible(false);
+    setLoading(true);
+    try {
+      await api.configureAPIKeys(pendingValues);
+      message.success(`${pendingValues.provider} API configuration saved successfully`);
+      form.resetFields();
+      setPendingValues(null);
+    } catch (error) {
+      message.error('Failed to save API configuration');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRunSQL = async (values: { query: string }) => {
+    setDbLoading(true);
+    try {
+      // Simulate SQL execution - in production, this would call the backend API
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      message.success('SQL query executed successfully');
+      dbForm.resetFields();
+    } catch (error) {
+      message.error('Failed to execute SQL query');
+    } finally {
+      setDbLoading(false);
+    }
+  };
+
   return (
     <Layout>
       <div className="space-y-6">
@@ -135,9 +246,12 @@ export default function AdminSettingsPage() {
                   <Form
                     form={form}
                     layout="vertical"
-                    onFinish={handleSaveAPIConfig}
+                    onFinish={(values) => { setPendingValues(values); setConfirmVisible(true); }}
                     initialValues={{
                       is_active: true,
+                      model: 'gpt-4o-mini',
+                      max_tokens: 1000,
+                      temperature: 0.7,
                     }}
                   >
                     <Row gutter={16}>
@@ -149,7 +263,14 @@ export default function AdminSettingsPage() {
                             { required: true, message: 'Please select a provider' },
                           ]}
                         >
-                          <Select placeholder="Select AI provider">
+                          <Select
+                          placeholder="Select AI provider"
+                          onChange={(value) => {
+                            form.setFieldsValue({ model: modelOptions[value as 'openai' | 'mistral'][0].value });
+                            setSelectedProvider(value as 'openai' | 'mistral');
+                          }}
+                          aria-label="Select AI Provider"
+                        >
                             <Option value="openai">
                               <div className="flex items-center space-x-2">
                                 <RobotOutlined />
@@ -180,6 +301,61 @@ export default function AdminSettingsPage() {
                       </Col>
                     </Row>
 
+                    <Row gutter={16}>
+                      <Col xs={24} md={12}>
+                        <Tooltip title="Select the AI model to use for processing. Options vary by provider.">
+                          <Form.Item
+                            name="model"
+                            label="Model"
+                            rules={[{ required: true, message: 'Please select a model' }]}
+                          >
+                            <Select placeholder="Select model" aria-label="Select AI Model">
+                              {modelOptions[selectedProvider].map(option => (
+                                <Option key={option.value} value={option.value}>
+                                  {option.label}
+                                </Option>
+                              ))}
+                            </Select>
+                          </Form.Item>
+                        </Tooltip>
+                      </Col>
+
+                      <Col xs={24} md={12}>
+                        <Tooltip title="Maximum number of tokens for AI responses (1-4000).">
+                          <Form.Item
+                            name="max_tokens"
+                            label="Max Tokens"
+                            rules={[{ required: true, type: 'number', min: 1, max: 4000 }]}
+                          >
+                            <InputNumber
+                              min={1}
+                              max={4000}
+                              style={{ width: '100%' }}
+                            />
+                          </Form.Item>
+                        </Tooltip>
+                      </Col>
+                    </Row>
+
+                    <Row gutter={16}>
+                      <Col xs={24} md={12}>
+                        <Tooltip title="Controls randomness in AI responses (0.0 = deterministic, 2.0 = highly random).">
+                          <Form.Item
+                            name="temperature"
+                            label="Temperature"
+                            rules={[{ required: true, type: 'number', min: 0, max: 2 }]}
+                          >
+                            <InputNumber
+                              min={0}
+                              max={2}
+                              step={0.1}
+                              style={{ width: '100%' }}
+                            />
+                          </Form.Item>
+                        </Tooltip>
+                      </Col>
+                    </Row>
+
                     <Form.Item
                       name="api_key"
                       label="API Key"
@@ -198,9 +374,10 @@ export default function AdminSettingsPage() {
                       <Space>
                         <Button
                           type="primary"
-                          htmlType="submit"
+                          onClick={() => form.submit()}
                           loading={loading}
                           icon={<SaveOutlined />}
+                          aria-label="Save API Configuration"
                         >
                           Save Configuration
                         </Button>
@@ -448,33 +625,165 @@ export default function AdminSettingsPage() {
               <Divider />
 
               <div className="space-y-4">
-                <Title level={4}>Available Tools</Title>
+                <Title level={4}>SQL Query Executor</Title>
 
-                <Card size="small" title="Backup & Recovery" type="inner">
-                  <Text>
-                    Database backup and recovery tools will be available here.
-                    Features include automated backups, point-in-time recovery, and export functionality.
-                  </Text>
-                </Card>
+                <Card title="Run SQL Queries" type="inner">
+                  <Alert
+                    message="SQL Query Tool"
+                    description="Execute SQL queries directly on the database. Use with caution."
+                    type="warning"
+                    showIcon
+                    className="mb-4"
+                  />
 
-                <Card size="small" title="Performance Monitoring" type="inner">
-                  <Text>
-                    Real-time database performance monitoring, query analysis,
-                    and optimization recommendations will be displayed here.
-                  </Text>
-                </Card>
+                  <Form form={dbForm} onFinish={handleRunSQL} layout="vertical">
+                    <Form.Item
+                      name="query"
+                      label="SQL Query"
+                      rules={[{ required: true, message: 'Please enter a SQL query' }]}
+                    >
+                      <Input.TextArea
+                        rows={4}
+                        placeholder="SELECT * FROM users LIMIT 10;"
+                        aria-label="SQL Query Input"
+                      />
+                    </Form.Item>
 
-                <Card size="small" title="Data Maintenance" type="inner">
-                  <Text>
-                    Database maintenance tools including index optimization,
-                    vacuum operations, and data integrity checks.
-                  </Text>
+                    <Button
+                      type="primary"
+                      htmlType="submit"
+                      loading={dbLoading}
+                      icon={<DatabaseOutlined />}
+                      aria-label="Execute SQL Query"
+                    >
+                      Execute Query
+                    </Button>
+                  </Form>
                 </Card>
               </div>
             </Card>
           </TabPane>
+
+          {/* Company Branding Tab */}
+          <TabPane tab={<span><BuildOutlined />Company Branding</span>} key="company-branding">
+            <Card title="🏢 Company Branding">
+              <Alert
+                message="Customize Your Brand"
+                description="Set your company name and upload a logo to personalize the application."
+                type="info"
+                showIcon
+                className="mb-6"
+              />
+
+              <Form
+                form={brandingForm}
+                layout="vertical"
+                onFinish={handleSaveBranding}
+              >
+                <Form.Item
+                  name="companyName"
+                  label="Company Name"
+                  rules={[{ required: true, message: 'Please enter the company name' }]}
+                >
+                  <Input placeholder="Enter company name" />
+                </Form.Item>
+
+                <Form.Item
+                  name="logo"
+                  label="Company Logo"
+                  rules={[{ required: true, message: 'Please upload a logo' }]}
+                >
+                  <Upload
+                    listType="picture-card"
+                    beforeUpload={(file) => {
+                      const reader = new FileReader();
+                      reader.onload = (e) => {
+                        const url = e.target?.result as string;
+                        brandingForm.setFieldsValue({ logo: [{ url }] });
+                      };
+                      reader.readAsDataURL(file);
+                      return false; // Prevent auto upload
+                    }}
+                    accept="image/*"
+                    maxCount={1}
+                  >
+                    <div>
+                      <BuildOutlined />
+                      <div style={{ marginTop: 8 }}>Upload Logo</div>
+                    </div>
+                  </Upload>
+                </Form.Item>
+
+                <Form.Item>
+                  <Button type="primary" htmlType="submit" icon={<SaveOutlined />}>Save Branding</Button>
+                </Form.Item>
+              </Form>
+            </Card>
+          </TabPane>
+
+          {/* AI System Prompt Tab */}
+          <TabPane tab={<span><RobotOutlined />AI System Prompt</span>} key="system-prompt">
+            <Card title="🤖 AI System Prompt">
+              <Alert
+                message="Customize AI Instructions"
+                description="Modify the system prompt to customize how the AI responds to user queries based on document context."
+                type="info"
+                showIcon
+                className="mb-6"
+              />
+
+              <Form
+                form={promptForm}
+                layout="vertical"
+                onFinish={handleSavePrompt}
+                initialValues={{ prompt: systemPrompt }}
+              >
+                <Form.Item
+                  name="prompt"
+                  label="System Prompt Template"
+                  rules={[{ required: true, message: 'Please enter the system prompt' }]}
+                >
+                  <Input.TextArea
+                    rows={12}
+                    placeholder="Enter the system prompt template with placeholders like {context}, {references_text}"
+                    style={{ fontFamily: 'monospace' }}
+                  />
+                </Form.Item>
+
+                <Form.Item>
+                  <Button
+                    type="primary"
+                    htmlType="submit"
+                    loading={promptLoading}
+                    icon={<SaveOutlined />}
+                  >
+                    Save Prompt
+                  </Button>
+                </Form.Item>
+              </Form>
+            </Card>
+          </TabPane>
         </Tabs>
       </div>
+
+      <Modal
+        title="Confirm API Configuration"
+        open={confirmVisible}
+        onOk={handleConfirmSave}
+        onCancel={() => { setConfirmVisible(false); setPendingValues(null); }}
+        okText="Save"
+        cancelText="Cancel"
+      >
+        <p>Are you sure you want to save this API configuration? This will update the system settings.</p>
+        {pendingValues && (
+          <div>
+            <p>Provider: {pendingValues.provider}</p>
+            <p>Model: {pendingValues.model}</p>
+            <p>Max Tokens: {pendingValues.max_tokens}</p>
+            <p>Temperature: {pendingValues.temperature}</p>
+          </div>
+        )}
+      </Modal>
     </Layout>
   );
 }

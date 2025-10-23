@@ -314,8 +314,8 @@ export default function DocumentsPage() {
   };
 
   const handleChatWithDocument = (document: Document) => {
-    // Navigate to chat with document context
-    router.push('/chat');
+    // Navigate to chat with the specific document selected
+    router.push(`/chat?documentId=${document.id}`);
   };
 
   const handleDocumentAction = async (documentId: number, action: 'extract' | 'chunk' | 'embed') => {
@@ -494,7 +494,7 @@ export default function DocumentsPage() {
     const document = documents.find(doc => doc.id === documentId);
 
     if (document && document.status === 'processed') {
-      router.push('/chat');
+      router.push(`/chat?documentId=${documentId}`);
     } else {
       message.warning('Selected document must be fully embedded before chatting');
     }
