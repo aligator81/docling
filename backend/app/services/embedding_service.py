@@ -36,16 +36,8 @@ if sys.platform == "win32":
     sys.stderr.reconfigure(encoding='utf-8')
 warnings.filterwarnings("ignore", message=".*clean_up_tokenization_spaces.*")
 
-# Import the tokenizer from utils
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'utils'))
-try:
-    from tokenizer import OpenAITokenizerWrapper
-except ImportError:
-    # Fallback if utils not available
-    class OpenAITokenizerWrapper:
-        def encode(self, text: str) -> List[int]:
-            # Simple fallback tokenizer
-            return text.split()
+# Import tiktoken for tokenization
+import tiktoken
 
 @dataclass
 class EmbeddingResult:
@@ -60,7 +52,7 @@ class EmbeddingService:
 
     def __init__(self, provider: str = "openai"):
         self.provider = provider.lower()
-        self.tokenizer = OpenAITokenizerWrapper()
+        self.tokenizer = tiktoken.get_encoding('cl100k_base')
 
         # Configuration constants for robust large file handling
         self.embedding_timeout = 1800  # 30 minutes timeout per chunk
