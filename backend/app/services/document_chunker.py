@@ -34,8 +34,16 @@ if sys.platform == "win32":
     sys.stderr.reconfigure(encoding='utf-8')
 warnings.filterwarnings("ignore", message=".*clean_up_tokenization_spaces.*")
 
-# Import tiktoken for tokenization
-import tiktoken
+# Import the tokenizer from utils
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'utils'))
+try:
+    from tokenizer import OpenAITokenizerWrapper
+except ImportError:
+    # Fallback if utils not available
+    class OpenAITokenizerWrapper:
+        def encode(self, text: str) -> List[int]:
+            # Simple fallback tokenizer
+            return text.split()
 
 @dataclass
 class ChunkingResult:
@@ -49,15 +57,15 @@ class DocumentChunker:
     """Document chunking service"""
 
     def __init__(self):
-        self.tokenizer = tiktoken.get_encoding('cl100k_base')
+        self.tokenizer = OpenAITokenizerWrapper()
 
         # Initialize DocumentConverter for content processing
         self.converter = DocumentConverter()
 
         # Initialize optimized chunker with better semantic preservation
         self.chunker = HybridChunker(
-            tokenizer='gpt2',  # Use GPT-2 tokenizer as a compatible alternative
-            max_tokens=1024,  # GPT-2's maximum context length
+            tokenizer=self.tokenizer,
+            max_tokens=8191,  # text-embedding-3-large's maximum context length
             merge_peers=True,
             # Enhanced parameters for better semantic coherence
             similarity_threshold=0.85,  # Higher threshold for better chunk cohesion
@@ -66,10 +74,10 @@ class DocumentChunker:
 
         # Configuration constants for better semantic preservation
         self.chunk_size_config = {
-            'max_tokens': 1024,  # Updated for GPT-2
-            'optimal_chunk_size': 512,  # Adjusted for smaller context
-            'min_chunk_size': 128,  # Smaller minimum for GPT-2
-            'semantic_overlap': 64,  # Reduced overlap for smaller chunks
+            'max_tokens': 8191,
+            'optimal_chunk_size': 2048,
+            'min_chunk_size': 512,
+            'semantic_overlap': 256,
         }
 
     def extract_page_numbers_from_text(self, text: str) -> str:
