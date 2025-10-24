@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Form, Input, Button, Card, Typography, Alert, Space, Divider } from 'antd';
+import { Form, Input, Button, Card, Typography, Alert, Space, Divider, ConfigProvider } from 'antd';
 import { UserOutlined, LockOutlined, MailOutlined, LoginOutlined } from '@ant-design/icons';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -14,6 +14,7 @@ export default function RegisterPage() {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [primaryColor, setPrimaryColor] = useState<string>('#1890ff');
   const router = useRouter();
 
   // Check if already authenticated
@@ -21,6 +22,23 @@ export default function RegisterPage() {
     if (AuthService.isAuthenticated()) {
       router.push('/dashboard');
     }
+
+    // Load theme color
+    const savedColor = localStorage.getItem('primaryColor') || '#1890ff';
+    setPrimaryColor(savedColor);
+    document.documentElement.style.setProperty('--primary-color', savedColor);
+
+    // Listen for theme changes
+    const handleThemeChange = () => {
+      const newColor = localStorage.getItem('primaryColor') || '#1890ff';
+      setPrimaryColor(newColor);
+      document.documentElement.style.setProperty('--primary-color', newColor);
+    };
+    window.addEventListener('themeChange', handleThemeChange);
+
+    return () => {
+      window.removeEventListener('themeChange', handleThemeChange);
+    };
   }, [router]);
 
   const handleSubmit = async (values: RegisterForm) => {
@@ -43,8 +61,9 @@ export default function RegisterPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
-      <Card className="w-full max-w-md shadow-lg">
+    <div className="min-h-screen flex items-center justify-center p-4" style={{ background: `linear-gradient(to bottom right, ${primaryColor}15, ${primaryColor}25)` }}>
+      <ConfigProvider theme={{ token: { colorPrimary: primaryColor } }}>
+        <Card className="w-full max-w-md shadow-lg">
         <div className="text-center mb-8">
           <Title level={2} className="text-gray-800 mb-2">
             📚 Document Q&A Assistant
@@ -169,12 +188,13 @@ export default function RegisterPage() {
         <div className="text-center">
           <Text type="secondary">
             Already have an account?{' '}
-            <Link href="/login" className="text-blue-600 hover:text-blue-800">
+            <Link href="/login" className="text-[var(--primary-color)] hover:opacity-80">
               Sign in here
             </Link>
           </Text>
         </div>
-      </Card>
+        </Card>
+      </ConfigProvider>
     </div>
   );
 }

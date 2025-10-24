@@ -11,6 +11,7 @@ import {
   Typography,
   Space,
   Drawer,
+  ConfigProvider,
 } from 'antd';
 import {
   MenuFoldOutlined,
@@ -43,6 +44,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const [loggingOut, setLoggingOut] = useState(false);
   const [companyName, setCompanyName] = useState<string>('');
   const [companyLogo, setCompanyLogo] = useState<string>('');
+  const [primaryColor, setPrimaryColor] = useState<string>('#1890ff');
   const pathname = usePathname();
 
   useEffect(() => {
@@ -59,7 +61,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     // Listen for storage changes (in case user data is updated elsewhere)
     window.addEventListener('storage', handleStorageChange);
 
-    // Load branding
+    // Load branding and theme
     const loadBranding = async () => {
       try {
         const branding = await api.getCompanyBranding();
@@ -71,10 +73,24 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     };
     loadBranding();
 
+    // Load theme color
+    setPrimaryColor(localStorage.getItem('primaryColor') || '#1890ff');
+
+    // Listen for theme changes
+    const handleThemeChange = () => {
+      setPrimaryColor(localStorage.getItem('primaryColor') || '#1890ff');
+    };
+    window.addEventListener('themeChange', handleThemeChange);
+
     return () => {
       window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('themeChange', handleThemeChange);
     };
   }, []);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty('--primary-color', primaryColor);
+  }, [primaryColor]);
 
   const menuItems = [
     {
@@ -173,7 +189,8 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   );
 
   return (
-    <AntLayout className="min-h-screen">
+    <ConfigProvider theme={{ token: { colorPrimary: primaryColor } }}>
+      <AntLayout className="min-h-screen">
       {/* Desktop Sidebar */}
       <Sider
         trigger={null}
@@ -208,7 +225,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
       <AntLayout>
         {/* Header */}
-        <Header className="px-4 bg-white border-b border-gray-200 flex items-center justify-between">
+        <Header className="px-4 text-white flex items-center justify-between" style={{ backgroundColor: primaryColor, borderBottom: `1px solid ${primaryColor}40` }}>
           <Space>
             {/* Mobile menu button */}
             <Button
@@ -261,6 +278,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         </Content>
       </AntLayout>
     </AntLayout>
+    </ConfigProvider>
   );
 };
 

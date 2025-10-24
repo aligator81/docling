@@ -35,6 +35,7 @@ import {
   ExclamationCircleOutlined,
   BuildOutlined,
 } from '@ant-design/icons';
+import { ColorPicker } from 'antd';
 import { useRouter } from 'next/navigation';
 import { AuthService } from '@/lib/auth';
 import { api } from '@/lib/api';
@@ -112,9 +113,11 @@ export default function AdminSettingsPage() {
   const loadBrandingSettings = async () => {
     try {
       const branding = await api.getCompanyBranding();
+      const savedColor = localStorage.getItem('primaryColor') || '#1890ff';
       brandingForm.setFieldsValue({
         companyName: branding.company_name || '',
         logo: branding.logo_url ? [{ url: branding.logo_url }] : [],
+        primaryColor: savedColor,
       });
     } catch (error) {
       console.error('Failed to load branding:', error);
@@ -137,7 +140,7 @@ export default function AdminSettingsPage() {
         company_name: values.companyName,
         logo_url: values.logo && values.logo.length > 0 ? values.logo[0].url : undefined,
       });
-      message.success('Company branding saved successfully');
+      message.success('Company branding and theme saved successfully');
       loadBrandingSettings(); // Refresh form
     } catch (error) {
       message.error('Failed to save branding');
@@ -712,6 +715,21 @@ export default function AdminSettingsPage() {
                       <div style={{ marginTop: 8 }}>Upload Logo</div>
                     </div>
                   </Upload>
+                </Form.Item>
+
+                <Form.Item
+                  name="primaryColor"
+                  label="Theme Color"
+                >
+                  <ColorPicker
+                    value={brandingForm.getFieldValue('primaryColor')}
+                    onChange={(color) => {
+                      const hex = color.toHexString();
+                      brandingForm.setFieldsValue({ primaryColor: hex });
+                      localStorage.setItem('primaryColor', hex);
+                      window.dispatchEvent(new CustomEvent('themeChange'));
+                    }}
+                  />
                 </Form.Item>
 
                 <Form.Item>

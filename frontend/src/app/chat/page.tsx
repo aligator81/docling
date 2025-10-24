@@ -223,7 +223,7 @@ function ChatContent() {
         <Card className="shadow-sm">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-4">
-              <FileTextOutlined className="text-xl text-blue-500" />
+              <FileTextOutlined className="text-xl text-[var(--primary-color)]" />
               <div>
                 <div className="font-medium">Select Documents to Chat With</div>
                 <div className="text-sm text-gray-500">
@@ -390,7 +390,7 @@ function ChatContent() {
                   <div
                     className={`max-w-[70%] p-4 rounded-lg ${
                       message.isUser
-                        ? 'bg-blue-500 text-white ml-12'
+                        ? 'bg-[var(--primary-color)] text-white ml-12'
                         : 'bg-gray-100 text-gray-800 mr-12'
                     }`}
                   >
@@ -398,7 +398,7 @@ function ChatContent() {
                       <Avatar
                         icon={message.isUser ? <UserOutlined /> : <RobotOutlined />}
                         size="small"
-                        className={`flex-shrink-0 ${message.isUser ? 'bg-white text-blue-500' : 'bg-gray-200 text-gray-600'}`}
+                        className={`flex-shrink-0 ${message.isUser ? 'bg-white text-[var(--primary-color)]' : 'bg-gray-200 text-gray-600'}`}
                       />
                       <div className="flex-1 min-w-0">
                         <div className={`break-words ${message.isUser ? 'text-white' : 'text-gray-800'}`}>
@@ -455,7 +455,7 @@ function ChatContent() {
                           </div>
                         )}
                         
-                        <div className={`text-xs mt-2 ${message.isUser ? 'text-blue-100' : 'text-gray-500'}`}>
+                        <div className={`text-xs mt-2 ${message.isUser ? 'text-white/80' : 'text-gray-500'}`}>
                           {new Date(message.timestamp).toLocaleTimeString()}
                           {!message.isUser && message.model_used && (
                             <span className="ml-2">• {message.model_used}</span>
